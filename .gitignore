@@ -3,6 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+OPTIMIZATION.md
 
 # 個人情報を含む設定ファイル
 src/config.h
