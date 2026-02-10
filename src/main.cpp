@@ -38,25 +38,28 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
-  config.frame_size = FRAMESIZE_UXGA;
   config.pixel_format = PIXFORMAT_JPEG; // ストリーミング用
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
-  config.jpeg_quality = 12;
-  config.fb_count = 1;
 
-  // PSRAMがある場合はより高品質な設定
+  // 安定性重視の設定（ESP32S3の負荷を軽減）
+  config.frame_size = FRAMESIZE_VGA; // 640x480 (UXGAより大幅に軽量)
+  config.jpeg_quality = 15;          // 12より圧縮率を上げて処理を軽く
+  config.fb_count = 1;               // メモリ節約のためシングルバッファ
+
+  // PSRAMがある場合の最適化設定
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
-      config.jpeg_quality = 10;
-      config.fb_count = 2;
+      config.jpeg_quality = 18; // 品質をやや下げて安定性向上
+      config.fb_count = 2;      // ダブルバッファで滑らかに
       config.grab_mode = CAMERA_GRAB_LATEST;
-      Serial.println("PSRAM found - using high quality settings");
+      Serial.println("PSRAM found - using optimized settings for stability");
     } else {
-      // PSRAMがない場合はフレームサイズを制限
-      config.frame_size = FRAMESIZE_SVGA;
+      // PSRAMがない場合はさらに軽量化
+      config.frame_size = FRAMESIZE_QVGA; // 320x240
       config.fb_location = CAMERA_FB_IN_DRAM;
-      Serial.println("No PSRAM - using limited settings");
+      config.jpeg_quality = 20;
+      Serial.println("No PSRAM - using minimal settings");
     }
   } else {
     // 顔検出/認識用の設定
@@ -92,19 +95,17 @@ void setup() {
       Serial.println("  OV3660 detected - applied adjustments");
     }
 
-    // 初期フレームレート向上のためフレームサイズを調整
-    if (config.pixel_format == PIXFORMAT_JPEG) {
-      s->set_framesize(s, FRAMESIZE_QVGA);
-      Serial.println("  Initial frame size set to QVGA for better framerate");
-    }
+    // フレームサイズはVGAのまま維持（安定性重視）
+    Serial.printf("  Frame size: VGA (640x480)\n");
   }
 
   // WiFi接続開始
   Serial.println("\nConnecting to WiFi...");
   Serial.printf("SSID: %s\n", WIFI_SSID);
 
+  WiFi.mode(WIFI_STA); // ステーションモードに明示的に設定
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  WiFi.setSleep(false);
+  WiFi.setSleep(false); // WiFiスリープ無効で安定性向上
 
   int connection_timeout = 30; // 30秒タイムアウト
   while (WiFi.status() != WL_CONNECTED && connection_timeout > 0) {
@@ -145,13 +146,23 @@ void setup() {
 
 void loop() {
   // サーバーはバックグラウンドタスクで動作
-  // 必要に応じてここにステータス表示などを追加可能
-  delay(10000);
+  // ウォッチドッグタイマー対策のためyield()を呼ぶ
+  yield();
+
+  delay(5000); // 5秒ごとにチェック
 
   // WiFi接続チェック
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi connection lost! Restarting...");
     delay(1000);
     ESP.restart();
+  }
+
+  // メモリ監視（デバッグ用、必要に応じてコメントアウト）
+  static uint32_t lastCheck = 0;
+  if (millis() - lastCheck > 30000) { // 30秒ごと
+    lastCheck = millis();
+    Serial.printf("Free heap: %d bytes, Min free heap: %d bytes\n",
+                  ESP.getFreeHeap(), ESP.getMinFreeHeap());
   }
 }
