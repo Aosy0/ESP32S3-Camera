@@ -1,6 +1,7 @@
 #include "FS.h"
 #include "SD.h"
 #include "SPI.h"
+#include "app_httpd.h"
 #include "camera_pins.h"
 #include "config.h"
 #include "esp_camera.h"
@@ -257,6 +258,11 @@ void setup() {
     } else {
       Serial.println("Failed to obtain time");
     }
+
+    // Webカメラサーバー起動
+    startCameraServer();
+    Serial.printf("Camera server: http://%s\n",
+                  WiFi.localIP().toString().c_str());
   } else {
     Serial.println("WiFi connection failed!");
     Serial.println("Continuing without WiFi (time stamps will use counter)");
