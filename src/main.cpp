@@ -1,11 +1,146 @@
-#include "app_httpd.h"
+#include "FS.h"
+#include "SD.h"
+#include "SPI.h"
 #include "camera_pins.h"
-#include "config.h" // WiFi設定を読み込み
+#include "config.h"
 #include "esp_camera.h"
+#include "time.h"
 #include <Arduino.h>
 #include <WiFi.h>
 
-// WiFi設定はconfig.hファイルで定義されています
+// XIAO ESP32S3 拡張基板 SDカードピン設定
+#define SD_CS 21
+#define SD_MOSI 9
+#define SD_MISO 8
+#define SD_SCK 7
+
+// 撮影間隔（ミリ秒）
+const unsigned long CAPTURE_INTERVAL = 10 * 60 * 1000; // 10分
+
+// NTPサーバー設定
+const char *ntpServer = "ntp.nict.jp";
+const long gmtOffset_sec = 9 * 3600; // JST (UTC+9)
+const int daylightOffset_sec = 0;
+
+// グローバル変数
+unsigned long lastCaptureTime = 0;
+int imageCount = 0;
+bool sdCardAvailable = false;
+
+// SDカード初期化
+bool initSDCard() {
+  Serial.println("\nInitializing SD card...");
+
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SD card mount failed!");
+    return false;
+  }
+
+  uint8_t cardType = SD.cardType();
+
+  if (cardType == CARD_NONE) {
+    Serial.println("No SD card attached");
+    return false;
+  }
+
+  Serial.print("SD Card Type: ");
+  if (cardType == CARD_MMC) {
+    Serial.println("MMC");
+  } else if (cardType == CARD_SD) {
+    Serial.println("SDSC");
+  } else if (cardType == CARD_SDHC) {
+    Serial.println("SDHC");
+  } else {
+    Serial.println("UNKNOWN");
+  }
+
+  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+  Serial.printf("SD Card Size: %lluMB\n", cardSize);
+  Serial.printf("Total space: %lluMB\n", SD.totalBytes() / (1024 * 1024));
+  Serial.printf("Used space: %lluMB\n", SD.usedBytes() / (1024 * 1024));
+
+  Serial.println("SD card initialized successfully!");
+  return true;
+}
+
+// 画像をSDカードに保存
+bool saveImageToSD(camera_fb_t *fb) {
+  if (!sdCardAvailable) {
+    Serial.println("SD card not available");
+    return false;
+  }
+
+  // タイムスタンプ取得
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
+    // 時刻が取得できない場合はカウンターを使用
+    char filename[32];
+    snprintf(filename, sizeof(filename), "/image_%04d.jpg", imageCount);
+
+    File file = SD.open(filename, FILE_WRITE);
+    if (!file) {
+      Serial.printf("Failed to open file: %s\n", filename);
+      return false;
+    }
+
+    file.write(fb->buf, fb->len);
+    file.close();
+
+    Serial.printf("Image saved: %s (%d bytes)\n", filename, fb->len);
+    return true;
+  }
+
+  // タイムスタンプベースのファイル名
+  char filename[64];
+  snprintf(filename, sizeof(filename), "/%04d%02d%02d_%02d%02d%02d.jpg",
+           timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+
+  File file = SD.open(filename, FILE_WRITE);
+  if (!file) {
+    Serial.printf("Failed to open file: %s\n", filename);
+    return false;
+  }
+
+  size_t written = file.write(fb->buf, fb->len);
+  file.close();
+
+  if (written == fb->len) {
+    Serial.printf("Image saved: %s (%d bytes)\n", filename, fb->len);
+    return true;
+  } else {
+    Serial.printf("Write error: %s (written %d/%d bytes)\n", filename, written,
+                  fb->len);
+    return false;
+  }
+}
+
+// 写真撮影とSDカード保存
+void captureAndSave() {
+  Serial.println("\n=== Capturing image ===");
+
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("Camera capture failed");
+    return;
+  }
+
+  Serial.printf("Image captured: %dx%d, %d bytes\n", fb->width, fb->height,
+                fb->len);
+
+  if (saveImageToSD(fb)) {
+    imageCount++;
+    Serial.printf("Total images saved: %d\n", imageCount);
+  }
+
+  esp_camera_fb_return(fb);
+
+  Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
+  Serial.println("=== Capture complete ===");
+}
 
 void setup() {
   Serial.begin(115200);
@@ -14,7 +149,7 @@ void setup() {
   Serial.setDebugOutput(true);
   Serial.println();
   Serial.println("==================================");
-  Serial.println("ESP32-S3 Camera Streaming Server");
+  Serial.println("ESP32-S3 Camera Auto Save to SD");
   Serial.println("==================================");
 
   // カメラ設定
@@ -38,35 +173,25 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
-  config.pixel_format = PIXFORMAT_JPEG; // ストリーミング用
+  config.pixel_format = PIXFORMAT_JPEG;
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
 
-  // 安定性重視の設定（ESP32S3の負荷を軽減）
-  config.frame_size = FRAMESIZE_VGA; // 640x480 (UXGAより大幅に軽量)
-  config.jpeg_quality = 15;          // 12より圧縮率を上げて処理を軽く
-  config.fb_count = 1;               // メモリ節約のためシングルバッファ
+  // 安定性重視の設定
+  config.frame_size = FRAMESIZE_VGA; // 640x480
+  config.jpeg_quality = 12;          // 高品質（SDカード保存用）
+  config.fb_count = 1;
 
   // PSRAMがある場合の最適化設定
-  if (config.pixel_format == PIXFORMAT_JPEG) {
-    if (psramFound()) {
-      config.jpeg_quality = 18; // 品質をやや下げて安定性向上
-      config.fb_count = 2;      // ダブルバッファで滑らかに
-      config.grab_mode = CAMERA_GRAB_LATEST;
-      Serial.println("PSRAM found - using optimized settings for stability");
-    } else {
-      // PSRAMがない場合はさらに軽量化
-      config.frame_size = FRAMESIZE_QVGA; // 320x240
-      config.fb_location = CAMERA_FB_IN_DRAM;
-      config.jpeg_quality = 20;
-      Serial.println("No PSRAM - using minimal settings");
-    }
-  } else {
-    // 顔検出/認識用の設定
-    config.frame_size = FRAMESIZE_240X240;
-#if CONFIG_IDF_TARGET_ESP32S3
+  if (psramFound()) {
+    config.jpeg_quality = 10;
     config.fb_count = 2;
-#endif
+    config.grab_mode = CAMERA_GRAB_LATEST;
+    Serial.println("PSRAM found - using high quality settings");
+  } else {
+    config.frame_size = FRAMESIZE_QVGA;
+    config.fb_location = CAMERA_FB_IN_DRAM;
+    Serial.println("No PSRAM - using QVGA settings");
   }
 
   // カメラ初期化
@@ -81,33 +206,35 @@ void setup() {
   }
   Serial.println("Camera initialized successfully!");
 
-  // センサー設定の取得と調整
+  // センサー設定の調整
   sensor_t *s = esp_camera_sensor_get();
   if (s) {
     Serial.println("Camera sensor info:");
     Serial.printf("  PID: 0x%02X\n", s->id.PID);
 
-    // OV3660センサーの場合は調整（XIAOで使用されることが多い）
     if (s->id.PID == 0x3660) {
-      s->set_vflip(s, 1);       // 垂直反転
-      s->set_brightness(s, 1);  // 明るさアップ
-      s->set_saturation(s, -2); // 彩度を少し下げる
+      s->set_vflip(s, 1);
+      s->set_brightness(s, 1);
+      s->set_saturation(s, -2);
       Serial.println("  OV3660 detected - applied adjustments");
     }
+  }
 
-    // フレームサイズはVGAのまま維持（安定性重視）
-    Serial.printf("  Frame size: VGA (640x480)\n");
+  // SDカード初期化
+  sdCardAvailable = initSDCard();
+  if (!sdCardAvailable) {
+    Serial.println("WARNING: Running without SD card!");
   }
 
   // WiFi接続開始
   Serial.println("\nConnecting to WiFi...");
   Serial.printf("SSID: %s\n", WIFI_SSID);
 
-  WiFi.mode(WIFI_STA); // ステーションモードに明示的に設定
+  WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  WiFi.setSleep(false); // WiFiスリープ無効で安定性向上
+  WiFi.setSleep(false);
 
-  int connection_timeout = 30; // 30秒タイムアウト
+  int connection_timeout = 30;
   while (WiFi.status() != WL_CONNECTED && connection_timeout > 0) {
     delay(500);
     Serial.print(".");
@@ -117,52 +244,58 @@ void setup() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("WiFi connected successfully!");
-    Serial.println("==================================");
-    Serial.print("Camera Ready! Use 'http://");
-    Serial.print(WiFi.localIP());
-    Serial.println("' to connect");
-    Serial.println("==================================");
-    Serial.println("\nAvailable URLs:");
-    Serial.print("  Main page:   http://");
+    Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
-    Serial.print("  Stream:      http://");
-    Serial.print(WiFi.localIP());
-    Serial.println("/stream");
-    Serial.print("  Capture:     http://");
-    Serial.print(WiFi.localIP());
-    Serial.println("/capture");
-    Serial.println("==================================");
 
-    // カメラWebサーバーを起動
-    startCameraServer();
+    // NTP時刻同期
+    Serial.println("Synchronizing time with NTP...");
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      Serial.println(&timeinfo, "Current time: %Y-%m-%d %H:%M:%S");
+    } else {
+      Serial.println("Failed to obtain time");
+    }
   } else {
     Serial.println("WiFi connection failed!");
-    Serial.println("Please check your WiFi credentials and try again");
-    Serial.println("Restarting in 10 seconds...");
-    delay(10000);
-    ESP.restart();
+    Serial.println("Continuing without WiFi (time stamps will use counter)");
   }
+
+  Serial.println("==================================");
+  Serial.println("System ready!");
+  Serial.printf("Capture interval: %d minutes\n", CAPTURE_INTERVAL / 60000);
+  Serial.println("==================================");
+
+  // 初回撮影
+  delay(2000);
+  captureAndSave();
+  lastCaptureTime = millis();
 }
 
 void loop() {
-  // サーバーはバックグラウンドタスクで動作
-  // ウォッチドッグタイマー対策のためyield()を呼ぶ
-  yield();
+  unsigned long currentTime = millis();
 
-  delay(5000); // 5秒ごとにチェック
-
-  // WiFi接続チェック
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi connection lost! Restarting...");
-    delay(1000);
-    ESP.restart();
+  // 10分ごとに撮影
+  if (currentTime - lastCaptureTime >= CAPTURE_INTERVAL) {
+    captureAndSave();
+    lastCaptureTime = currentTime;
   }
 
-  // メモリ監視（デバッグ用、必要に応じてコメントアウト）
-  static uint32_t lastCheck = 0;
-  if (millis() - lastCheck > 30000) { // 30秒ごと
-    lastCheck = millis();
-    Serial.printf("Free heap: %d bytes, Min free heap: %d bytes\n",
-                  ESP.getFreeHeap(), ESP.getMinFreeHeap());
+  // WiFi接続チェック（1分ごと）
+  static unsigned long lastWiFiCheck = 0;
+  if (currentTime - lastWiFiCheck >= 60000) {
+    lastWiFiCheck = currentTime;
+
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("WiFi disconnected. Attempting to reconnect...");
+      WiFi.reconnect();
+    } else {
+      Serial.printf("Status OK - Next capture in %d seconds\n",
+                    (CAPTURE_INTERVAL - (currentTime - lastCaptureTime)) /
+                        1000);
+    }
   }
+
+  delay(1000);
 }
