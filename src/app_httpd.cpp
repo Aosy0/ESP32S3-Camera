@@ -5,7 +5,6 @@
 #include "img_converters.h"
 #include <Arduino.h>
 
-
 #define PART_BOUNDARY "123456789000000000000987654321"
 static const char *_STREAM_CONTENT_TYPE =
     "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
@@ -17,6 +16,11 @@ static const char *_STREAM_PART =
 httpd_handle_t camera_httpd = NULL;
 httpd_handle_t stream_httpd = NULL;
 static bool grayscaleMode = false;
+
+// main.cppの関数/変数を参照
+extern bool saveImageToSD(camera_fb_t *fb);
+extern bool sdCardAvailable;
+extern int imageCount;
 
 // ────────────────────────────────────────
 // ストリームハンドラ（ポート81で動作）
@@ -98,6 +102,11 @@ static esp_err_t capture_handler(httpd_req_t *req) {
       httpd_resp_send_500(req);
       return ESP_FAIL;
     }
+  }
+  // SDカードに保存
+  if (sdCardAvailable) {
+    if (saveImageToSD(fb))
+      imageCount++;
   }
   esp_camera_fb_return(fb);
   return res;
@@ -258,8 +267,7 @@ static const char INDEX_HTML[] = R"rawliteral(
     .pg{display:none;padding:16px;max-width:720px;margin:0 auto}
     .pg.active{display:block}
     .sc{text-align:center}
-    #stream,#cprev{max-width:100%;border:2px solid #333;border-radius:8px;background:#000}
-    #cprev{border-color:#4caf50;display:none}
+    #stream{max-width:100%;border:2px solid #333;border-radius:8px;background:#000}
     .ct{display:flex;flex-direction:column;gap:10px;margin-top:12px}
     .cg{background:#1e1e1e;border-radius:8px;padding:14px;border:1px solid #333}
     .cg label{display:block;font-size:12px;color:#90caf9;margin-bottom:6px;font-weight:600}
@@ -285,8 +293,9 @@ static const char INDEX_HTML[] = R"rawliteral(
     .th{position:relative;aspect-ratio:4/3;overflow:hidden;border-radius:6px;border:1px solid #333;cursor:pointer;background:#000}
     .th img{width:100%;height:100%;object-fit:cover}
     .th .inf{position:absolute;bottom:0;left:0;right:0;padding:4px 6px;background:rgba(0,0,0,.7);font-size:10px;color:#ccc}
-    .th .dl{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;background:rgba(200,0,0,.7);color:#fff;border:none;font-size:12px;cursor:pointer;display:none;align-items:center;justify-content:center}
-    .th:hover .dl{display:flex}
+    .th .chk{position:absolute;top:4px;left:4px;width:20px;height:20px;accent-color:#90caf9;display:none}
+    .sel-mode .th .chk{display:block}
+    .th.selected{border:2px solid #90caf9}
     .md{display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:100;align-items:center;justify-content:center;flex-direction:column}
     .md.active{display:flex}
     .md img{max-width:95%;max-height:80vh;border-radius:8px}
@@ -295,6 +304,9 @@ static const char INDEX_HTML[] = R"rawliteral(
     .md .mb{display:flex;gap:8px;margin-top:10px}
     .em{text-align:center;color:#666;padding:40px;font-size:14px}
     .fc{font-size:12px;color:#888;margin-bottom:8px}
+    .bar{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
+    .bar .cnt{font-size:12px;color:#90caf9;margin-left:4px}
+    .prog{font-size:11px;color:#aaa;min-height:16px;margin-top:4px}
   </style>
 </head>
 <body>
@@ -309,17 +321,16 @@ static const char INDEX_HTML[] = R"rawliteral(
   <div class="pg active" id="pg-live">
     <div class="sc">
       <img id="stream" src="" alt="Stream">
-      <img id="cprev" alt="Preview">
     </div>
     <div class="ct">
       <div class="cg">
         <label>Resolution</label>
         <select id="fs" onchange="setFS(this.value)">
           <option value="5">QVGA (320x240)</option>
+          <option value="6">CIF (400x296)</option>
           <option value="8" selected>VGA (640x480)</option>
           <option value="9">SVGA (800x600)</option>
-          <option value="11">HD (1280x720)</option>
-          <option value="13">UXGA (1600x1200)</option>
+          <option value="10">XGA (1024x768)</option>
         </select>
       </div>
       <div class="cg">
@@ -331,7 +342,6 @@ static const char INDEX_HTML[] = R"rawliteral(
       <div class="br">
         <button class="btn" onclick="capture()">Capture</button>
         <button class="btn" onclick="startStream()">Reload</button>
-        <button class="btn btn-g" id="svBtn" onclick="saveCap()" style="display:none">Save</button>
       </div>
       <div class="st" id="st">Ready</div>
     </div>
@@ -339,10 +349,16 @@ static const char INDEX_HTML[] = R"rawliteral(
 
   <div class="pg" id="pg-gal">
     <div class="fc" id="fc"></div>
-    <div class="br" style="margin-bottom:12px">
+    <div class="bar">
       <button class="btn" onclick="loadGal()">Refresh</button>
+      <button class="btn" id="selBtn" onclick="toggleSel()">Select</button>
+      <button class="btn" id="saBtn" onclick="selAll()" style="display:none">All</button>
+      <button class="btn" id="dlAllBtn" onclick="dlAll()" style="display:none">Download</button>
+      <button class="btn btn-r" id="rmAllBtn" onclick="rmAll()" style="display:none">Delete</button>
+      <span class="cnt" id="selCnt"></span>
     </div>
     <div class="gal" id="gal"></div>
+    <div class="prog" id="prog"></div>
   </div>
 
   <div class="md" id="md" onclick="closeMd(event)">
@@ -358,12 +374,13 @@ static const char INDEX_HTML[] = R"rawliteral(
   <script>
     var STREAM_URL='http://'+location.hostname+':81/stream';
     var si=document.getElementById('stream');
-    var cp=document.getElementById('cprev');
     var stEl=document.getElementById('st');
-    var svBtn=document.getElementById('svBtn');
     var curFile='';
+    var selMode=false;
+    var galFiles=[];
 
     function setSt(m,t){stEl.textContent=m;stEl.className='st'+(t?' '+t:'')}
+    function setProg(m){document.getElementById('prog').textContent=m}
 
     function showPage(p){
       document.querySelectorAll('.pg').forEach(function(e){e.classList.remove('active')});
@@ -375,74 +392,109 @@ static const char INDEX_HTML[] = R"rawliteral(
     }
 
     function stopStream(){si.src=''}
-
     function startStream(){
-      cp.style.display='none';
-      si.style.display='block';
-      svBtn.style.display='none';
-      si.src=STREAM_URL+'?'+Date.now();
-      setSt('Streaming','ok');
+      si.src=STREAM_URL+'?'+Date.now();setSt('Streaming','ok');
     }
 
     function sendSet(body){
-      setSt('Applying...');
-      stopStream();
-      var x=new XMLHttpRequest();
-      x.open('POST','/settings',true);
-      x.onload=function(){
-        if(x.status===200){setSt('Applied','ok');setTimeout(startStream,300);}
-        else setSt('Error','er');
-      };
-      x.onerror=function(){setSt('Error','er')};
-      x.send(body);
+      setSt('Applying...');stopStream();
+      var x=new XMLHttpRequest();x.open('POST','/settings',true);
+      x.onload=function(){if(x.status===200){setSt('Applied','ok');setTimeout(startStream,300);}else setSt('Error','er')};
+      x.onerror=function(){setSt('Error','er')};x.send(body);
     }
     function setFS(v){sendSet('framesize='+v)}
     function setGS(on){sendSet('grayscale='+(on?1:0))}
 
     function capture(){
-      setSt('Capturing...');
-      stopStream();
-      si.style.display='none';
-      cp.src='/capture?'+Date.now();
-      cp.style.display='block';
-      cp.onload=function(){setSt('Captured','ok');svBtn.style.display='block'};
-      cp.onerror=function(){setSt('Failed','er');startStream()};
+      setSt('Saving...');
+      fetch('/capture?'+Date.now()).then(function(r){
+        if(r.ok)setSt('Saved to SD','ok');
+        else setSt('Failed','er');
+      }).catch(function(){setSt('Failed','er')});
     }
-    function saveCap(){
-      var a=document.createElement('a');
-      a.href='/capture?'+Date.now();
-      a.download='capture_'+new Date().toISOString().replace(/[:.]/g,'-')+'.jpg';
-      a.click();setSt('Saved','ok');
+
+    // -- Gallery --
+    function toggleSel(){
+      selMode=!selMode;
+      var g=document.getElementById('gal');
+      if(selMode){g.classList.add('sel-mode');document.getElementById('selBtn').textContent='Cancel';}
+      else{g.classList.remove('sel-mode');document.getElementById('selBtn').textContent='Select';
+        g.querySelectorAll('.chk').forEach(function(c){c.checked=false});
+        g.querySelectorAll('.th').forEach(function(t){t.classList.remove('selected')});
+      }
+      updateSelUI();
+    }
+    function updateSelUI(){
+      var n=getSelNames().length;
+      document.getElementById('saBtn').style.display=selMode?'':'none';
+      document.getElementById('dlAllBtn').style.display=(selMode&&n>0)?'':'none';
+      document.getElementById('rmAllBtn').style.display=(selMode&&n>0)?'':'none';
+      document.getElementById('selCnt').textContent=selMode?(n>0?n+' selected':''):'';}
+    function selAll(){
+      var g=document.getElementById('gal');var all=g.querySelectorAll('.chk');
+      var allChecked=true;all.forEach(function(c){if(!c.checked)allChecked=false});
+      all.forEach(function(c){c.checked=!allChecked;c.parentElement.classList.toggle('selected',!allChecked)});
+      updateSelUI();
+    }
+    function getSelNames(){
+      var names=[];document.querySelectorAll('.gal .chk:checked').forEach(function(c){names.push(c.dataset.name)});return names;
+    }
+    function onChk(el){el.parentElement.classList.toggle('selected',el.checked);updateSelUI()}
+    function thClick(name,size,el){
+      if(selMode){var c=el.querySelector('.chk');c.checked=!c.checked;onChk(c);}
+      else openMd(name,size);
     }
 
     function loadGal(){
-      var g=document.getElementById('gal');
-      var fc=document.getElementById('fc');
-      g.innerHTML='<div class="em">Loading...</div>';
+      var g=document.getElementById('gal');var fc=document.getElementById('fc');
+      g.innerHTML='<div class="em">Loading...</div>';setProg('');
       fetch('/files').then(function(r){return r.json()}).then(function(d){
-        if(!d.files||d.files.length===0){
-          g.innerHTML='<div class="em">No images on SD card</div>';fc.textContent='';return;
-        }
-        d.files.sort(function(a,b){return b.name.localeCompare(a.name)});
-        fc.textContent=d.files.length+' images';
+        galFiles=d.files||[];
+        if(galFiles.length===0){g.innerHTML='<div class="em">No images on SD card</div>';fc.textContent='';return;}
+        galFiles.sort(function(a,b){return b.name.localeCompare(a.name)});
+        fc.textContent=galFiles.length+' images';
         var h='';
-        d.files.forEach(function(f){
+        galFiles.forEach(function(f){
           var kb=Math.round(f.size/1024);
-          h+='<div class="th" onclick="openMd(\''+f.name+'\','+f.size+')">';
+          h+='<div class="th" onclick="thClick(\''+f.name+'\','+f.size+',this)">';
+          h+='<input type="checkbox" class="chk" data-name="'+f.name+'" onclick="event.stopPropagation();onChk(this)">';
           h+='<img src="/sd/'+f.name+'" loading="lazy">';
           h+='<div class="inf">'+f.name+' ('+kb+'KB)</div>';
-          h+='<button class="dl" onclick="event.stopPropagation();rmFromGal(\''+f.name+'\')">&times;</button>';
           h+='</div>';
         });
         g.innerHTML=h;
+        if(selMode)g.classList.add('sel-mode');
+        updateSelUI();
       }).catch(function(e){
-        g.innerHTML='<div class="em">Failed to load ('+e+')</div>';fc.textContent='';
+        g.innerHTML='<div class="em">Failed to load</div>';fc.textContent='';
       });
     }
 
+    function dlAll(){
+      var names=getSelNames();if(names.length===0)return;
+      var i=0;setProg('Downloading 0/'+names.length);
+      function next(){
+        if(i>=names.length){setProg('Download complete ('+names.length+')');return;}
+        var a=document.createElement('a');a.href='/sd/'+names[i];a.download=names[i];a.click();
+        i++;setProg('Downloading '+i+'/'+names.length);setTimeout(next,500);
+      }
+      next();
+    }
+    function rmAll(){
+      var names=getSelNames();if(names.length===0)return;
+      if(!confirm('WARNING: '+names.length+' images will be permanently deleted.\n\nAre you sure?'))return;
+      var i=0,ok=0;setProg('Deleting 0/'+names.length);
+      function next(){
+        if(i>=names.length){setProg('Deleted '+ok+'/'+names.length);loadGal();return;}
+        var x=new XMLHttpRequest();x.open('POST','/delete',true);var n=names[i];
+        x.onload=function(){ok++;i++;setProg('Deleting '+i+'/'+names.length);setTimeout(next,100)};
+        x.onerror=function(){i++;setTimeout(next,100)};x.send('file=/'+n);
+      }
+      next();
+    }
+
     function openMd(name,size){
-      curFile=name;
-      document.getElementById('md-img').src='/sd/'+name;
+      curFile=name;document.getElementById('md-img').src='/sd/'+name;
       document.getElementById('md-info').textContent=name+' ('+Math.round(size/1024)+' KB)';
       document.getElementById('md').classList.add('active');
     }
@@ -450,18 +502,11 @@ static const char INDEX_HTML[] = R"rawliteral(
       if(!e||e.target===document.getElementById('md')||e.target.classList.contains('cl'))
         document.getElementById('md').classList.remove('active');
     }
-    function dlFile(){
-      var a=document.createElement('a');a.href='/sd/'+curFile;a.download=curFile;a.click();
-    }
+    function dlFile(){var a=document.createElement('a');a.href='/sd/'+curFile;a.download=curFile;a.click()}
     function rmFile(){
-      if(!confirm('Delete '+curFile+'?'))return;
+      if(!confirm('"'+curFile+'" to delete. Are you sure?'))return;
       var x=new XMLHttpRequest();x.open('POST','/delete',true);
       x.onload=function(){closeMd();loadGal()};x.send('file=/'+curFile);
-    }
-    function rmFromGal(name){
-      if(!confirm('Delete '+name+'?'))return;
-      var x=new XMLHttpRequest();x.open('POST','/delete',true);
-      x.onload=function(){loadGal()};x.send('file=/'+name);
     }
 
     fetch('/status').then(function(r){return r.json()}).then(function(d){
