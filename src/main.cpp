@@ -1,6 +1,5 @@
 #include "FS.h"
-#include "SD.h"
-#include "SPI.h"
+#include "SD_MMC.h"
 #include "app_httpd.h"
 #include "camera_pins.h"
 #include "config.h"
@@ -9,11 +8,10 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
-// XIAO ESP32S3 拡張基板 SDカードピン設定
-#define SD_CS 21
-#define SD_MOSI 9
-#define SD_MISO 8
-#define SD_SCK 7
+// XIAO ESP32S3 拡張基板 SDカードピン設定（SD_MMC 1ビットモード）
+#define SD_MMC_CLK 7
+#define SD_MMC_CMD 9
+#define SD_MMC_D0 8
 
 // 撮影間隔（ミリ秒）
 const unsigned long CAPTURE_INTERVAL = 10 * 60 * 1000; // 10分
@@ -28,25 +26,53 @@ unsigned long lastCaptureTime = 0;
 int imageCount = 0;
 bool sdCardAvailable = false;
 
-// SDカード初期化
+// SDカード初期化（SD_MMC 1ビットモード）
 bool initSDCard() {
-  Serial.println("\nInitializing SD card...");
+  Serial.println("\n========================================");
+  Serial.println("Initializing SD card (SD_MMC 1-bit mode)");
+  Serial.println("========================================");
 
-  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  Serial.printf("SD_MMC Pins:\n");
+  Serial.printf("  CLK: GPIO%d\n", SD_MMC_CLK);
+  Serial.printf("  CMD: GPIO%d\n", SD_MMC_CMD);
+  Serial.printf("  D0:  GPIO%d\n", SD_MMC_D0);
 
-  if (!SD.begin(SD_CS)) {
-    Serial.println("SD card mount failed!");
-    return false;
+  delay(500);
+
+  // SD_MMCピンの設定
+  SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
+
+  // 試行1: 1ビットモードで初期化
+  Serial.println("\nAttempt 1: 1-bit mode (default speed)");
+  if (SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT, 5)) {
+    Serial.println("SD card mounted successfully!");
+  } else {
+    Serial.println("Failed with default speed");
+
+    // 試行2: 低速で再試行
+    Serial.println("\nAttempt 2: 1-bit mode (low speed)");
+    if (SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_PROBING, 5)) {
+      Serial.println("SD card mounted (low speed)!");
+    } else {
+      Serial.println("All attempts failed");
+      Serial.println("\nPlease check:");
+      Serial.println("1. SD card is properly inserted");
+      Serial.println("2. SD card is formatted as FAT32");
+      Serial.println("3. XIAO is seated on expansion board");
+      Serial.println("4. Try another SD card");
+      return false;
+    }
   }
 
-  uint8_t cardType = SD.cardType();
+  // カード情報を表示
+  uint8_t cardType = SD_MMC.cardType();
 
   if (cardType == CARD_NONE) {
-    Serial.println("No SD card attached");
+    Serial.println("No SD card detected");
     return false;
   }
 
-  Serial.print("SD Card Type: ");
+  Serial.print("Card Type: ");
   if (cardType == CARD_MMC) {
     Serial.println("MMC");
   } else if (cardType == CARD_SD) {
@@ -57,12 +83,18 @@ bool initSDCard() {
     Serial.println("UNKNOWN");
   }
 
-  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
-  Serial.printf("SD Card Size: %lluMB\n", cardSize);
-  Serial.printf("Total space: %lluMB\n", SD.totalBytes() / (1024 * 1024));
-  Serial.printf("Used space: %lluMB\n", SD.usedBytes() / (1024 * 1024));
+  uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+  uint64_t totalBytes = SD_MMC.totalBytes() / (1024 * 1024);
+  uint64_t usedBytes = SD_MMC.usedBytes() / (1024 * 1024);
 
+  Serial.printf("Card Size: %llu MB\n", cardSize);
+  Serial.printf("Total Space: %llu MB\n", totalBytes);
+  Serial.printf("Used Space: %llu MB\n", usedBytes);
+  Serial.printf("Free Space: %llu MB\n", totalBytes - usedBytes);
+
+  Serial.println("\n========================================");
   Serial.println("SD card initialized successfully!");
+  Serial.println("========================================");
   return true;
 }
 
@@ -77,11 +109,10 @@ bool saveImageToSD(camera_fb_t *fb) {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
     Serial.println("Failed to obtain time");
-    // 時刻が取得できない場合はカウンターを使用
     char filename[32];
     snprintf(filename, sizeof(filename), "/image_%04d.jpg", imageCount);
 
-    File file = SD.open(filename, FILE_WRITE);
+    File file = SD_MMC.open(filename, FILE_WRITE);
     if (!file) {
       Serial.printf("Failed to open file: %s\n", filename);
       return false;
@@ -100,7 +131,7 @@ bool saveImageToSD(camera_fb_t *fb) {
            timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
            timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 
-  File file = SD.open(filename, FILE_WRITE);
+  File file = SD_MMC.open(filename, FILE_WRITE);
   if (!file) {
     Serial.printf("Failed to open file: %s\n", filename);
     return false;
@@ -179,8 +210,8 @@ void setup() {
   config.fb_location = CAMERA_FB_IN_PSRAM;
 
   // 安定性重視の設定
-  config.frame_size = FRAMESIZE_VGA; // 640x480
-  config.jpeg_quality = 12;          // 高品質（SDカード保存用）
+  config.frame_size = FRAMESIZE_VGA;
+  config.jpeg_quality = 12;
   config.fb_count = 1;
 
   // PSRAMがある場合の最適化設定
@@ -225,6 +256,7 @@ void setup() {
   sdCardAvailable = initSDCard();
   if (!sdCardAvailable) {
     Serial.println("WARNING: Running without SD card!");
+    Serial.println("Camera will still work, but images won't be saved.");
   }
 
   // WiFi接続開始
@@ -273,17 +305,19 @@ void setup() {
   Serial.printf("Capture interval: %d minutes\n", CAPTURE_INTERVAL / 60000);
   Serial.println("==================================");
 
-  // 初回撮影
-  delay(2000);
-  captureAndSave();
-  lastCaptureTime = millis();
+  // 初回撮影（SDカードがある場合のみ）
+  if (sdCardAvailable) {
+    delay(2000);
+    captureAndSave();
+    lastCaptureTime = millis();
+  }
 }
 
 void loop() {
   unsigned long currentTime = millis();
 
-  // 10分ごとに撮影
-  if (currentTime - lastCaptureTime >= CAPTURE_INTERVAL) {
+  // 10分ごとに撮影（SDカードがある場合のみ）
+  if (sdCardAvailable && (currentTime - lastCaptureTime >= CAPTURE_INTERVAL)) {
     captureAndSave();
     lastCaptureTime = currentTime;
   }
@@ -297,9 +331,13 @@ void loop() {
       Serial.println("WiFi disconnected. Attempting to reconnect...");
       WiFi.reconnect();
     } else {
-      Serial.printf("Status OK - Next capture in %d seconds\n",
-                    (CAPTURE_INTERVAL - (currentTime - lastCaptureTime)) /
-                        1000);
+      if (sdCardAvailable) {
+        Serial.printf("Status OK - Next capture in %d seconds\n",
+                      (CAPTURE_INTERVAL - (currentTime - lastCaptureTime)) /
+                          1000);
+      } else {
+        Serial.println("Status OK - SD card not available");
+      }
     }
   }
 

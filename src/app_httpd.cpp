@@ -76,6 +76,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 static esp_err_t capture_handler(httpd_req_t *req) {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
+    Serial.println("Camera capture failed");
     httpd_resp_send_500(req);
     return ESP_FAIL;
   }
@@ -83,6 +84,7 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Content-Disposition",
                      "inline; filename=capture.jpg");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
   esp_err_t res;
   if (fb->format == PIXFORMAT_JPEG) {
@@ -100,6 +102,7 @@ static esp_err_t capture_handler(httpd_req_t *req) {
     }
   }
   esp_camera_fb_return(fb);
+  Serial.println("Photo captured via web");
   return res;
 }
 
@@ -112,6 +115,7 @@ static esp_err_t settings_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
   buf[ret] = '\0';
+  Serial.printf("Settings request: %s\n", buf);
 
   sensor_t *s = esp_camera_sensor_get();
   if (!s) {
@@ -119,8 +123,6 @@ static esp_err_t settings_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  // パラメータ解析
-  // framesize=<値> または grayscale=<0|1>
   char *p;
 
   p = strstr(buf, "framesize=");
@@ -145,6 +147,7 @@ static esp_err_t settings_handler(httpd_req_t *req) {
   }
 
   httpd_resp_set_type(req, "text/plain");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_sendstr(req, "OK");
   return ESP_OK;
 }
@@ -162,6 +165,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
            s->status.framesize, grayscaleMode ? 1 : 0);
 
   httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_sendstr(req, json);
   return ESP_OK;
 }
@@ -199,13 +203,26 @@ static const char INDEX_HTML[] = R"rawliteral(
       padding: 16px;
       gap: 16px;
     }
-    #stream {
-      max-width: 100%;
+    #stream-container {
+      position: relative;
       width: 640px;
+      max-width: 100%;
+    }
+    #stream {
+      width: 100%;
       height: auto;
       border: 2px solid #333;
       border-radius: 8px;
       background: #000;
+      display: block;
+    }
+    #capture-preview {
+      width: 100%;
+      height: auto;
+      border: 2px solid #4caf50;
+      border-radius: 8px;
+      background: #000;
+      display: none;
     }
     .controls {
       width: 100%;
@@ -244,20 +261,13 @@ static const char INDEX_HTML[] = R"rawliteral(
       justify-content: space-between;
       align-items: center;
     }
-    .toggle-label {
-      font-size: 14px;
-      color: #e0e0e0;
-    }
+    .toggle-label { font-size: 14px; }
     .toggle {
       position: relative;
       width: 48px;
       height: 26px;
     }
-    .toggle input {
-      opacity: 0;
-      width: 0;
-      height: 0;
-    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
     .slider {
       position: absolute;
       cursor: pointer;
@@ -269,20 +279,15 @@ static const char INDEX_HTML[] = R"rawliteral(
     .slider:before {
       content: "";
       position: absolute;
-      height: 20px;
-      width: 20px;
-      left: 3px;
-      bottom: 3px;
+      height: 20px; width: 20px;
+      left: 3px; bottom: 3px;
       background: #fff;
       border-radius: 50%;
       transition: 0.3s;
     }
     .toggle input:checked + .slider { background: #90caf9; }
     .toggle input:checked + .slider:before { transform: translateX(22px); }
-    .btn-row {
-      display: flex;
-      gap: 8px;
-    }
+    .btn-row { display: flex; gap: 8px; }
     .btn {
       flex: 1;
       padding: 10px;
@@ -296,11 +301,19 @@ static const char INDEX_HTML[] = R"rawliteral(
     }
     .btn:hover { background: #383838; }
     .btn:active { background: #444; }
+    .btn-save {
+      background: #1b5e20;
+      border-color: #2e7d32;
+    }
+    .btn-save:hover { background: #2e7d32; }
     .status {
       font-size: 12px;
       color: #888;
       text-align: center;
+      min-height: 18px;
     }
+    .status.ok { color: #4caf50; }
+    .status.error { color: #f44336; }
   </style>
 </head>
 <body>
@@ -308,7 +321,10 @@ static const char INDEX_HTML[] = R"rawliteral(
     <h1>ESP32-S3 Camera</h1>
   </div>
   <div class="main">
-    <img id="stream" src="/stream" alt="Camera Stream">
+    <div id="stream-container">
+      <img id="stream" src="" alt="Camera Stream">
+      <img id="capture-preview" alt="Captured Photo">
+    </div>
     <div class="controls">
       <div class="control-group">
         <label>Resolution</label>
@@ -330,42 +346,91 @@ static const char INDEX_HTML[] = R"rawliteral(
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn" onclick="capture()">Capture Photo</button>
-        <button class="btn" onclick="reloadStream()">Reload Stream</button>
+        <button class="btn" onclick="capturePhoto()">Capture Photo</button>
+        <button class="btn" onclick="startStream()">Reload Stream</button>
+        <button class="btn btn-save" id="saveBtn" onclick="saveCapture()" style="display:none">Save Photo</button>
       </div>
       <div class="status" id="status">Ready</div>
     </div>
   </div>
   <script>
-    function sendSetting(body) {
-      document.getElementById('status').textContent = 'Applying...';
-      fetch('/settings', { method: 'POST', body: body })
-        .then(r => r.text())
-        .then(() => {
-          document.getElementById('status').textContent = 'Applied';
-          reloadStream();
-        })
-        .catch(e => {
-          document.getElementById('status').textContent = 'Error: ' + e;
-        });
+    var streamImg = document.getElementById('stream');
+    var previewImg = document.getElementById('capture-preview');
+    var statusEl = document.getElementById('status');
+    var saveBtn = document.getElementById('saveBtn');
+
+    function setStatus(msg, type) {
+      statusEl.textContent = msg;
+      statusEl.className = 'status' + (type ? ' ' + type : '');
     }
+
+    function startStream() {
+      previewImg.style.display = 'none';
+      streamImg.style.display = 'block';
+      saveBtn.style.display = 'none';
+      streamImg.src = '/stream?' + Date.now();
+      setStatus('Streaming', 'ok');
+    }
+
+    function sendSetting(body) {
+      setStatus('Applying...');
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', '/settings', true);
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          setStatus('Applied', 'ok');
+          // 設定変更後にストリームを再接続
+          setTimeout(function() { startStream(); }, 500);
+        } else {
+          setStatus('Error: ' + xhr.status, 'error');
+        }
+      };
+      xhr.onerror = function() {
+        setStatus('Connection error', 'error');
+      };
+      xhr.send(body);
+    }
+
     function setFrameSize(val) { sendSetting('framesize=' + val); }
     function setGrayscale(on) { sendSetting('grayscale=' + (on ? 1 : 0)); }
-    function reloadStream() {
-      var img = document.getElementById('stream');
-      img.src = '/stream?' + Date.now();
+
+    function capturePhoto() {
+      setStatus('Capturing...');
+      // ストリームを一旦停止
+      streamImg.src = '';
+      streamImg.style.display = 'none';
+
+      // キャプチャ画像を取得
+      previewImg.src = '/capture?' + Date.now();
+      previewImg.style.display = 'block';
+      previewImg.onload = function() {
+        setStatus('Photo captured', 'ok');
+        saveBtn.style.display = 'block';
+      };
+      previewImg.onerror = function() {
+        setStatus('Capture failed', 'error');
+        startStream();
+      };
     }
-    function capture() {
-      window.open('/capture', '_blank');
+
+    function saveCapture() {
+      var a = document.createElement('a');
+      a.href = '/capture?' + Date.now();
+      a.download = 'capture_' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
+      a.click();
+      setStatus('Photo saved', 'ok');
     }
-    // 起動時に現在の設定を取得
+
+    // 起動時に設定を取得してストリーム開始
     fetch('/status')
-      .then(r => r.json())
-      .then(d => {
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
         document.getElementById('framesize').value = d.framesize;
         document.getElementById('grayscale').checked = d.grayscale === 1;
       })
-      .catch(() => {});
+      .catch(function() {});
+
+    startStream();
   </script>
 </body>
 </html>
