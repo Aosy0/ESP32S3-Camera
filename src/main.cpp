@@ -28,161 +28,75 @@ bool sdCardAvailable = false;
 
 // SDカード初期化（SD_MMC 1ビットモード）
 bool initSDCard() {
-  Serial.println("\n========================================");
-  Serial.println("Initializing SD card (SD_MMC 1-bit mode)");
-  Serial.println("========================================");
-
-  Serial.printf("SD_MMC Pins:\n");
-  Serial.printf("  CLK: GPIO%d\n", SD_MMC_CLK);
-  Serial.printf("  CMD: GPIO%d\n", SD_MMC_CMD);
-  Serial.printf("  D0:  GPIO%d\n", SD_MMC_D0);
-
+  Serial.print("SD card: ");
   delay(500);
-
-  // SD_MMCピンの設定
   SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
 
-  // 試行1: 1ビットモードで初期化
-  Serial.println("\nAttempt 1: 1-bit mode (default speed)");
-  if (SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT, 5)) {
-    Serial.println("SD card mounted successfully!");
-  } else {
-    Serial.println("Failed with default speed");
-
-    // 試行2: 低速で再試行
-    Serial.println("\nAttempt 2: 1-bit mode (low speed)");
-    if (SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_PROBING, 5)) {
-      Serial.println("SD card mounted (low speed)!");
-    } else {
-      Serial.println("All attempts failed");
-      Serial.println("\nPlease check:");
-      Serial.println("1. SD card is properly inserted");
-      Serial.println("2. SD card is formatted as FAT32");
-      Serial.println("3. XIAO is seated on expansion board");
-      Serial.println("4. Try another SD card");
+  if (!SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT, 5)) {
+    if (!SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_PROBING, 5)) {
+      Serial.println("Failed");
       return false;
     }
   }
 
-  // カード情報を表示
   uint8_t cardType = SD_MMC.cardType();
-
   if (cardType == CARD_NONE) {
-    Serial.println("No SD card detected");
+    Serial.println("Not detected");
     return false;
   }
 
-  Serial.print("Card Type: ");
-  if (cardType == CARD_MMC) {
-    Serial.println("MMC");
-  } else if (cardType == CARD_SD) {
-    Serial.println("SDSC");
-  } else if (cardType == CARD_SDHC) {
-    Serial.println("SDHC");
-  } else {
-    Serial.println("UNKNOWN");
-  }
-
   uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
-  uint64_t totalBytes = SD_MMC.totalBytes() / (1024 * 1024);
-  uint64_t usedBytes = SD_MMC.usedBytes() / (1024 * 1024);
-
-  Serial.printf("Card Size: %llu MB\n", cardSize);
-  Serial.printf("Total Space: %llu MB\n", totalBytes);
-  Serial.printf("Used Space: %llu MB\n", usedBytes);
-  Serial.printf("Free Space: %llu MB\n", totalBytes - usedBytes);
-
-  Serial.println("\n========================================");
-  Serial.println("SD card initialized successfully!");
-  Serial.println("========================================");
+  Serial.printf("OK (%lluMB)\n", cardSize);
   return true;
 }
 
 // 画像をSDカードに保存
 bool saveImageToSD(camera_fb_t *fb) {
-  if (!sdCardAvailable) {
-    Serial.println("SD card not available");
+  if (!sdCardAvailable)
     return false;
-  }
 
-  // タイムスタンプ取得
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    Serial.println("Failed to obtain time");
-    char filename[32];
-    snprintf(filename, sizeof(filename), "/image_%04d.jpg", imageCount);
-
-    File file = SD_MMC.open(filename, FILE_WRITE);
-    if (!file) {
-      Serial.printf("Failed to open file: %s\n", filename);
-      return false;
-    }
-
-    file.write(fb->buf, fb->len);
-    file.close();
-
-    Serial.printf("Image saved: %s (%d bytes)\n", filename, fb->len);
-    return true;
-  }
-
-  // タイムスタンプベースのファイル名
   char filename[64];
-  snprintf(filename, sizeof(filename), "/%04d%02d%02d_%02d%02d%02d.jpg",
-           timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+
+  if (!getLocalTime(&timeinfo)) {
+    snprintf(filename, sizeof(filename), "/image_%04d.jpg", imageCount);
+  } else {
+    snprintf(filename, sizeof(filename), "/%04d%02d%02d_%02d%02d%02d.jpg",
+             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+  }
 
   File file = SD_MMC.open(filename, FILE_WRITE);
-  if (!file) {
-    Serial.printf("Failed to open file: %s\n", filename);
+  if (!file)
     return false;
-  }
 
   size_t written = file.write(fb->buf, fb->len);
   file.close();
 
   if (written == fb->len) {
-    Serial.printf("Image saved: %s (%d bytes)\n", filename, fb->len);
+    Serial.printf("Saved: %s\n", filename);
     return true;
-  } else {
-    Serial.printf("Write error: %s (written %d/%d bytes)\n", filename, written,
-                  fb->len);
-    return false;
   }
+  return false;
 }
 
 // 写真撮影とSDカード保存
 void captureAndSave() {
-  Serial.println("\n=== Capturing image ===");
-
   camera_fb_t *fb = esp_camera_fb_get();
-  if (!fb) {
-    Serial.println("Camera capture failed");
+  if (!fb)
     return;
-  }
-
-  Serial.printf("Image captured: %dx%d, %d bytes\n", fb->width, fb->height,
-                fb->len);
 
   if (saveImageToSD(fb)) {
     imageCount++;
-    Serial.printf("Total images saved: %d\n", imageCount);
   }
 
   esp_camera_fb_return(fb);
-
-  Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
-  Serial.println("=== Capture complete ===");
 }
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial)
-    ;
-  Serial.setDebugOutput(true);
-  Serial.println();
-  Serial.println("==================================");
-  Serial.println("ESP32-S3 Camera Auto Save to SD");
-  Serial.println("==================================");
+  delay(1000);
+  Serial.println("\nESP32-S3 Camera");
 
   // カメラ設定
   camera_config_t config;
@@ -219,49 +133,34 @@ void setup() {
     config.jpeg_quality = 10;
     config.fb_count = 2;
     config.grab_mode = CAMERA_GRAB_LATEST;
-    Serial.println("PSRAM found - using high quality settings");
   } else {
     config.frame_size = FRAMESIZE_QVGA;
     config.fb_location = CAMERA_FB_IN_DRAM;
-    Serial.println("No PSRAM - using QVGA settings");
   }
 
   // カメラ初期化
-  Serial.println("Initializing camera...");
+  Serial.print("Camera: ");
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x\n", err);
-    Serial.println("Please check camera connection and restart");
-    while (true) {
+    Serial.printf("Failed (0x%x)\n", err);
+    while (true)
       delay(1000);
-    }
   }
-  Serial.println("Camera initialized successfully!");
+  Serial.println("OK");
 
   // センサー設定の調整
   sensor_t *s = esp_camera_sensor_get();
-  if (s) {
-    Serial.println("Camera sensor info:");
-    Serial.printf("  PID: 0x%02X\n", s->id.PID);
-
-    if (s->id.PID == 0x3660) {
-      s->set_vflip(s, 1);
-      s->set_brightness(s, 1);
-      s->set_saturation(s, -2);
-      Serial.println("  OV3660 detected - applied adjustments");
-    }
+  if (s && s->id.PID == 0x3660) {
+    s->set_vflip(s, 1);
+    s->set_brightness(s, 1);
+    s->set_saturation(s, -2);
   }
 
   // SDカード初期化
   sdCardAvailable = initSDCard();
-  if (!sdCardAvailable) {
-    Serial.println("WARNING: Running without SD card!");
-    Serial.println("Camera will still work, but images won't be saved.");
-  }
 
   // WiFi接続開始
-  Serial.println("\nConnecting to WiFi...");
-  Serial.printf("SSID: %s\n", WIFI_SSID);
+  Serial.print("WiFi: ");
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -270,40 +169,19 @@ void setup() {
   int connection_timeout = 30;
   while (WiFi.status() != WL_CONNECTED && connection_timeout > 0) {
     delay(500);
-    Serial.print(".");
     connection_timeout--;
   }
-  Serial.println();
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("WiFi connected successfully!");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-
-    // NTP時刻同期
-    Serial.println("Synchronizing time with NTP...");
+    Serial.println("OK");
+    Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-      Serial.println(&timeinfo, "Current time: %Y-%m-%d %H:%M:%S");
-    } else {
-      Serial.println("Failed to obtain time");
-    }
-
-    // Webカメラサーバー起動
     startCameraServer();
-    Serial.printf("Camera server: http://%s\n",
-                  WiFi.localIP().toString().c_str());
   } else {
-    Serial.println("WiFi connection failed!");
-    Serial.println("Continuing without WiFi (time stamps will use counter)");
+    Serial.println("Failed");
   }
 
-  Serial.println("==================================");
-  Serial.println("System ready!");
-  Serial.printf("Capture interval: %d minutes\n", CAPTURE_INTERVAL / 60000);
-  Serial.println("==================================");
+  Serial.println("Ready");
 
   // 初回撮影（SDカードがある場合のみ）
   if (sdCardAvailable) {
@@ -328,16 +206,7 @@ void loop() {
     lastWiFiCheck = currentTime;
 
     if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("WiFi disconnected. Attempting to reconnect...");
       WiFi.reconnect();
-    } else {
-      if (sdCardAvailable) {
-        Serial.printf("Status OK - Next capture in %d seconds\n",
-                      (CAPTURE_INTERVAL - (currentTime - lastCaptureTime)) /
-                          1000);
-      } else {
-        Serial.println("Status OK - SD card not available");
-      }
     }
   }
 

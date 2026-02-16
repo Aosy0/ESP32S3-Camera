@@ -1,3 +1,5 @@
+#include "FS.h"
+#include "SD_MMC.h"
 #include "esp_camera.h"
 #include "esp_http_server.h"
 #include "img_converters.h"
@@ -11,12 +13,14 @@ static const char *_STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
 static const char *_STREAM_PART =
     "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
+// ポート80: API/ページ用、ポート81: ストリーム専用
 httpd_handle_t camera_httpd = NULL;
-
-// 現在のグレースケール状態
+httpd_handle_t stream_httpd = NULL;
 static bool grayscaleMode = false;
 
-// ストリームハンドラ
+// ────────────────────────────────────────
+// ストリームハンドラ（ポート81で動作）
+// ────────────────────────────────────────
 static esp_err_t stream_handler(httpd_req_t *req) {
   camera_fb_t *fb = NULL;
   esp_err_t res = ESP_OK;
@@ -31,17 +35,14 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   while (true) {
     fb = esp_camera_fb_get();
     if (!fb) {
-      Serial.println("Camera capture failed");
       res = ESP_FAIL;
     } else {
       if (fb->format != PIXFORMAT_JPEG) {
-        bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
+        bool ok = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
         esp_camera_fb_return(fb);
         fb = NULL;
-        if (!jpeg_converted) {
-          Serial.println("JPEG compression failed");
+        if (!ok)
           res = ESP_FAIL;
-        }
       } else {
         _jpg_buf_len = fb->len;
         _jpg_buf = fb->buf;
@@ -51,13 +52,11 @@ static esp_err_t stream_handler(httpd_req_t *req) {
       size_t hlen = snprintf(part_buf, 64, _STREAM_PART, _jpg_buf_len);
       res = httpd_resp_send_chunk(req, part_buf, hlen);
     }
-    if (res == ESP_OK) {
+    if (res == ESP_OK)
       res = httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len);
-    }
-    if (res == ESP_OK) {
+    if (res == ESP_OK)
       res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY,
                                   strlen(_STREAM_BOUNDARY));
-    }
     if (fb) {
       esp_camera_fb_return(fb);
       fb = NULL;
@@ -72,20 +71,19 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return res;
 }
 
-// 静止画キャプチャハンドラ
+// ────────────────────────────────────────
+// API ハンドラ（ポート80で動作）
+// ────────────────────────────────────────
+
 static esp_err_t capture_handler(httpd_req_t *req) {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
-    Serial.println("Camera capture failed");
     httpd_resp_send_500(req);
     return ESP_FAIL;
   }
-
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Content-Disposition",
                      "inline; filename=capture.jpg");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-
   esp_err_t res;
   if (fb->format == PIXFORMAT_JPEG) {
     res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
@@ -102,11 +100,9 @@ static esp_err_t capture_handler(httpd_req_t *req) {
     }
   }
   esp_camera_fb_return(fb);
-  Serial.println("Photo captured via web");
   return res;
 }
 
-// 設定変更APIハンドラ
 static esp_err_t settings_handler(httpd_req_t *req) {
   char buf[128];
   int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
@@ -115,8 +111,6 @@ static esp_err_t settings_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
   buf[ret] = '\0';
-  Serial.printf("Settings request: %s\n", buf);
-
   sensor_t *s = esp_camera_sensor_get();
   if (!s) {
     httpd_resp_send_500(req);
@@ -124,53 +118,128 @@ static esp_err_t settings_handler(httpd_req_t *req) {
   }
 
   char *p;
-
   p = strstr(buf, "framesize=");
-  if (p) {
-    int val = atoi(p + 10);
-    s->set_framesize(s, (framesize_t)val);
-    Serial.printf("Frame size changed to: %d\n", val);
-  }
-
+  if (p)
+    s->set_framesize(s, (framesize_t)atoi(p + 10));
   p = strstr(buf, "grayscale=");
   if (p) {
     int val = atoi(p + 10);
     if (val) {
-      s->set_special_effect(s, 2); // Grayscale
+      s->set_special_effect(s, 2);
       grayscaleMode = true;
-      Serial.println("Grayscale mode: ON");
     } else {
-      s->set_special_effect(s, 0); // Normal
+      s->set_special_effect(s, 0);
       grayscaleMode = false;
-      Serial.println("Grayscale mode: OFF");
     }
   }
-
   httpd_resp_set_type(req, "text/plain");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_sendstr(req, "OK");
   return ESP_OK;
 }
 
-// 現在の設定取得APIハンドラ
 static esp_err_t status_handler(httpd_req_t *req) {
   sensor_t *s = esp_camera_sensor_get();
   if (!s) {
     httpd_resp_send_500(req);
     return ESP_FAIL;
   }
-
   char json[128];
   snprintf(json, sizeof(json), "{\"framesize\":%d,\"grayscale\":%d}",
            s->status.framesize, grayscaleMode ? 1 : 0);
-
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_sendstr(req, json);
   return ESP_OK;
 }
 
-// WebページHTML
+static esp_err_t files_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "application/json");
+  if (SD_MMC.cardType() == CARD_NONE) {
+    httpd_resp_sendstr(req, "{\"files\":[]}");
+    return ESP_OK;
+  }
+  File root = SD_MMC.open("/");
+  if (!root || !root.isDirectory()) {
+    httpd_resp_sendstr(req, "{\"files\":[]}");
+    return ESP_OK;
+  }
+  httpd_resp_sendstr_chunk(req, "{\"files\":[");
+  bool first = true;
+  File file = root.openNextFile();
+  while (file) {
+    if (!file.isDirectory()) {
+      const char *name = file.name();
+      size_t len = strlen(name);
+      if (len > 4 && strcasecmp(name + len - 4, ".jpg") == 0) {
+        char entry[128];
+        snprintf(entry, sizeof(entry), "%s{\"name\":\"%s\",\"size\":%d}",
+                 first ? "" : ",", name, (int)file.size());
+        httpd_resp_sendstr_chunk(req, entry);
+        first = false;
+      }
+    }
+    file.close();
+    file = root.openNextFile();
+  }
+  root.close();
+  httpd_resp_sendstr_chunk(req, "]}");
+  httpd_resp_sendstr_chunk(req, NULL);
+  return ESP_OK;
+}
+
+static esp_err_t sdfile_handler(httpd_req_t *req) {
+  const char *filepath = req->uri + 3; // skip "/sd"
+  if (SD_MMC.cardType() == CARD_NONE) {
+    httpd_resp_send_404(req);
+    return ESP_FAIL;
+  }
+  File file = SD_MMC.open(filepath, FILE_READ);
+  if (!file) {
+    httpd_resp_send_404(req);
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "image/jpeg");
+  char *buf = (char *)malloc(4096);
+  if (!buf) {
+    file.close();
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  size_t rd;
+  while ((rd = file.read((uint8_t *)buf, 4096)) > 0) {
+    if (httpd_resp_send_chunk(req, buf, rd) != ESP_OK) {
+      free(buf);
+      file.close();
+      return ESP_FAIL;
+    }
+  }
+  free(buf);
+  file.close();
+  httpd_resp_send_chunk(req, NULL, 0);
+  return ESP_OK;
+}
+
+static esp_err_t delete_handler(httpd_req_t *req) {
+  char buf[128];
+  int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+  if (ret <= 0) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  buf[ret] = '\0';
+  char *p = strstr(buf, "file=");
+  if (!p) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  SD_MMC.remove(p + 5);
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_sendstr(req, "OK");
+  return ESP_OK;
+}
+
+// ────────────────────────────────────────
+// HTML（ストリームURLをポート81に向ける）
+// ────────────────────────────────────────
 static const char INDEX_HTML[] = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -179,156 +248,73 @@ static const char INDEX_HTML[] = R"rawliteral(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ESP32-S3 Camera</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: 'Segoe UI', Arial, sans-serif;
-      background: #121212;
-      color: #e0e0e0;
-      min-height: 100vh;
-    }
-    .header {
-      background: #1e1e1e;
-      padding: 16px 24px;
-      border-bottom: 1px solid #333;
-    }
-    .header h1 {
-      font-size: 18px;
-      font-weight: 600;
-      color: #90caf9;
-    }
-    .main {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 16px;
-      gap: 16px;
-    }
-    #stream-container {
-      position: relative;
-      width: 640px;
-      max-width: 100%;
-    }
-    #stream {
-      width: 100%;
-      height: auto;
-      border: 2px solid #333;
-      border-radius: 8px;
-      background: #000;
-      display: block;
-    }
-    #capture-preview {
-      width: 100%;
-      height: auto;
-      border: 2px solid #4caf50;
-      border-radius: 8px;
-      background: #000;
-      display: none;
-    }
-    .controls {
-      width: 100%;
-      max-width: 640px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    .control-group {
-      background: #1e1e1e;
-      border-radius: 8px;
-      padding: 16px;
-      border: 1px solid #333;
-    }
-    .control-group label {
-      display: block;
-      font-size: 13px;
-      color: #90caf9;
-      margin-bottom: 8px;
-      font-weight: 600;
-    }
-    select {
-      width: 100%;
-      padding: 10px 12px;
-      background: #2a2a2a;
-      color: #e0e0e0;
-      border: 1px solid #444;
-      border-radius: 6px;
-      font-size: 14px;
-      cursor: pointer;
-      outline: none;
-    }
-    select:focus { border-color: #90caf9; }
-    .toggle-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .toggle-label { font-size: 14px; }
-    .toggle {
-      position: relative;
-      width: 48px;
-      height: 26px;
-    }
-    .toggle input { opacity: 0; width: 0; height: 0; }
-    .slider {
-      position: absolute;
-      cursor: pointer;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: #444;
-      border-radius: 26px;
-      transition: 0.3s;
-    }
-    .slider:before {
-      content: "";
-      position: absolute;
-      height: 20px; width: 20px;
-      left: 3px; bottom: 3px;
-      background: #fff;
-      border-radius: 50%;
-      transition: 0.3s;
-    }
-    .toggle input:checked + .slider { background: #90caf9; }
-    .toggle input:checked + .slider:before { transform: translateX(22px); }
-    .btn-row { display: flex; gap: 8px; }
-    .btn {
-      flex: 1;
-      padding: 10px;
-      border: 1px solid #444;
-      border-radius: 6px;
-      background: #2a2a2a;
-      color: #e0e0e0;
-      font-size: 14px;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-    .btn:hover { background: #383838; }
-    .btn:active { background: #444; }
-    .btn-save {
-      background: #1b5e20;
-      border-color: #2e7d32;
-    }
-    .btn-save:hover { background: #2e7d32; }
-    .status {
-      font-size: 12px;
-      color: #888;
-      text-align: center;
-      min-height: 18px;
-    }
-    .status.ok { color: #4caf50; }
-    .status.error { color: #f44336; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI',Arial,sans-serif;background:#121212;color:#e0e0e0;min-height:100vh}
+    .hd{background:#1e1e1e;padding:12px 20px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center}
+    .hd h1{font-size:16px;font-weight:600;color:#90caf9}
+    .tabs{display:flex;gap:4px}
+    .tab{padding:6px 14px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#aaa;font-size:13px;cursor:pointer}
+    .tab.active{background:#333;color:#90caf9;border-color:#90caf9}
+    .pg{display:none;padding:16px;max-width:720px;margin:0 auto}
+    .pg.active{display:block}
+    .sc{text-align:center}
+    #stream,#cprev{max-width:100%;border:2px solid #333;border-radius:8px;background:#000}
+    #cprev{border-color:#4caf50;display:none}
+    .ct{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+    .cg{background:#1e1e1e;border-radius:8px;padding:14px;border:1px solid #333}
+    .cg label{display:block;font-size:12px;color:#90caf9;margin-bottom:6px;font-weight:600}
+    select{width:100%;padding:8px;background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:6px;font-size:14px;outline:none}
+    .tr{display:flex;justify-content:space-between;align-items:center}
+    .tg{position:relative;width:44px;height:24px}
+    .tg input{opacity:0;width:0;height:0}
+    .sl{position:absolute;cursor:pointer;inset:0;background:#444;border-radius:24px;transition:.3s}
+    .sl:before{content:"";position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s}
+    .tg input:checked+.sl{background:#90caf9}
+    .tg input:checked+.sl:before{transform:translateX(20px)}
+    .br{display:flex;gap:6px}
+    .btn{flex:1;padding:8px;border:1px solid #444;border-radius:6px;background:#2a2a2a;color:#e0e0e0;font-size:13px;cursor:pointer;transition:background .2s}
+    .btn:hover{background:#383838}
+    .btn:active{background:#444}
+    .btn-g{background:#1b5e20;border-color:#2e7d32}
+    .btn-g:hover{background:#2e7d32}
+    .btn-r{background:#b71c1c;border-color:#c62828}
+    .btn-r:hover{background:#c62828}
+    .st{font-size:11px;color:#888;text-align:center;min-height:16px;margin-top:4px}
+    .st.ok{color:#4caf50}.st.er{color:#f44336}
+    .gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+    .th{position:relative;aspect-ratio:4/3;overflow:hidden;border-radius:6px;border:1px solid #333;cursor:pointer;background:#000}
+    .th img{width:100%;height:100%;object-fit:cover}
+    .th .inf{position:absolute;bottom:0;left:0;right:0;padding:4px 6px;background:rgba(0,0,0,.7);font-size:10px;color:#ccc}
+    .th .dl{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;background:rgba(200,0,0,.7);color:#fff;border:none;font-size:12px;cursor:pointer;display:none;align-items:center;justify-content:center}
+    .th:hover .dl{display:flex}
+    .md{display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:100;align-items:center;justify-content:center;flex-direction:column}
+    .md.active{display:flex}
+    .md img{max-width:95%;max-height:80vh;border-radius:8px}
+    .md .cl{position:absolute;top:16px;right:20px;font-size:28px;color:#fff;cursor:pointer;background:none;border:none}
+    .md .mi{color:#aaa;font-size:13px;margin-top:8px}
+    .md .mb{display:flex;gap:8px;margin-top:10px}
+    .em{text-align:center;color:#666;padding:40px;font-size:14px}
+    .fc{font-size:12px;color:#888;margin-bottom:8px}
   </style>
 </head>
 <body>
-  <div class="header">
+  <div class="hd">
     <h1>ESP32-S3 Camera</h1>
-  </div>
-  <div class="main">
-    <div id="stream-container">
-      <img id="stream" src="" alt="Camera Stream">
-      <img id="capture-preview" alt="Captured Photo">
+    <div class="tabs">
+      <div class="tab active" onclick="showPage('live')">Live</div>
+      <div class="tab" onclick="showPage('gal')">Gallery</div>
     </div>
-    <div class="controls">
-      <div class="control-group">
+  </div>
+
+  <div class="pg active" id="pg-live">
+    <div class="sc">
+      <img id="stream" src="" alt="Stream">
+      <img id="cprev" alt="Preview">
+    </div>
+    <div class="ct">
+      <div class="cg">
         <label>Resolution</label>
-        <select id="framesize" onchange="setFrameSize(this.value)">
+        <select id="fs" onchange="setFS(this.value)">
           <option value="5">QVGA (320x240)</option>
           <option value="8" selected>VGA (640x480)</option>
           <option value="9">SVGA (800x600)</option>
@@ -336,100 +322,152 @@ static const char INDEX_HTML[] = R"rawliteral(
           <option value="13">UXGA (1600x1200)</option>
         </select>
       </div>
-      <div class="control-group">
-        <div class="toggle-row">
-          <span class="toggle-label">Grayscale</span>
-          <label class="toggle">
-            <input type="checkbox" id="grayscale" onchange="setGrayscale(this.checked)">
-            <span class="slider"></span>
-          </label>
+      <div class="cg">
+        <div class="tr">
+          <span style="font-size:14px">Grayscale</span>
+          <label class="tg"><input type="checkbox" id="gs" onchange="setGS(this.checked)"><span class="sl"></span></label>
         </div>
       </div>
-      <div class="btn-row">
-        <button class="btn" onclick="capturePhoto()">Capture Photo</button>
-        <button class="btn" onclick="startStream()">Reload Stream</button>
-        <button class="btn btn-save" id="saveBtn" onclick="saveCapture()" style="display:none">Save Photo</button>
+      <div class="br">
+        <button class="btn" onclick="capture()">Capture</button>
+        <button class="btn" onclick="startStream()">Reload</button>
+        <button class="btn btn-g" id="svBtn" onclick="saveCap()" style="display:none">Save</button>
       </div>
-      <div class="status" id="status">Ready</div>
+      <div class="st" id="st">Ready</div>
     </div>
   </div>
+
+  <div class="pg" id="pg-gal">
+    <div class="fc" id="fc"></div>
+    <div class="br" style="margin-bottom:12px">
+      <button class="btn" onclick="loadGal()">Refresh</button>
+    </div>
+    <div class="gal" id="gal"></div>
+  </div>
+
+  <div class="md" id="md" onclick="closeMd(event)">
+    <button class="cl" onclick="closeMd()">&times;</button>
+    <img id="md-img" src="">
+    <div class="mi" id="md-info"></div>
+    <div class="mb">
+      <button class="btn" onclick="dlFile()">Download</button>
+      <button class="btn btn-r" onclick="rmFile()">Delete</button>
+    </div>
+  </div>
+
   <script>
-    var streamImg = document.getElementById('stream');
-    var previewImg = document.getElementById('capture-preview');
-    var statusEl = document.getElementById('status');
-    var saveBtn = document.getElementById('saveBtn');
+    var STREAM_URL='http://'+location.hostname+':81/stream';
+    var si=document.getElementById('stream');
+    var cp=document.getElementById('cprev');
+    var stEl=document.getElementById('st');
+    var svBtn=document.getElementById('svBtn');
+    var curFile='';
 
-    function setStatus(msg, type) {
-      statusEl.textContent = msg;
-      statusEl.className = 'status' + (type ? ' ' + type : '');
+    function setSt(m,t){stEl.textContent=m;stEl.className='st'+(t?' '+t:'')}
+
+    function showPage(p){
+      document.querySelectorAll('.pg').forEach(function(e){e.classList.remove('active')});
+      document.querySelectorAll('.tab').forEach(function(e){e.classList.remove('active')});
+      document.getElementById('pg-'+p).classList.add('active');
+      var tabs=document.querySelectorAll('.tab');
+      if(p==='live'){tabs[0].classList.add('active');startStream();}
+      else{tabs[1].classList.add('active');stopStream();loadGal();}
     }
 
-    function startStream() {
-      previewImg.style.display = 'none';
-      streamImg.style.display = 'block';
-      saveBtn.style.display = 'none';
-      streamImg.src = '/stream?' + Date.now();
-      setStatus('Streaming', 'ok');
+    function stopStream(){si.src=''}
+
+    function startStream(){
+      cp.style.display='none';
+      si.style.display='block';
+      svBtn.style.display='none';
+      si.src=STREAM_URL+'?'+Date.now();
+      setSt('Streaming','ok');
     }
 
-    function sendSetting(body) {
-      setStatus('Applying...');
-      var xhr = new XMLHttpRequest();
-      xhr.open('POST', '/settings', true);
-      xhr.onload = function() {
-        if (xhr.status === 200) {
-          setStatus('Applied', 'ok');
-          // 設定変更後にストリームを再接続
-          setTimeout(function() { startStream(); }, 500);
-        } else {
-          setStatus('Error: ' + xhr.status, 'error');
+    function sendSet(body){
+      setSt('Applying...');
+      stopStream();
+      var x=new XMLHttpRequest();
+      x.open('POST','/settings',true);
+      x.onload=function(){
+        if(x.status===200){setSt('Applied','ok');setTimeout(startStream,300);}
+        else setSt('Error','er');
+      };
+      x.onerror=function(){setSt('Error','er')};
+      x.send(body);
+    }
+    function setFS(v){sendSet('framesize='+v)}
+    function setGS(on){sendSet('grayscale='+(on?1:0))}
+
+    function capture(){
+      setSt('Capturing...');
+      stopStream();
+      si.style.display='none';
+      cp.src='/capture?'+Date.now();
+      cp.style.display='block';
+      cp.onload=function(){setSt('Captured','ok');svBtn.style.display='block'};
+      cp.onerror=function(){setSt('Failed','er');startStream()};
+    }
+    function saveCap(){
+      var a=document.createElement('a');
+      a.href='/capture?'+Date.now();
+      a.download='capture_'+new Date().toISOString().replace(/[:.]/g,'-')+'.jpg';
+      a.click();setSt('Saved','ok');
+    }
+
+    function loadGal(){
+      var g=document.getElementById('gal');
+      var fc=document.getElementById('fc');
+      g.innerHTML='<div class="em">Loading...</div>';
+      fetch('/files').then(function(r){return r.json()}).then(function(d){
+        if(!d.files||d.files.length===0){
+          g.innerHTML='<div class="em">No images on SD card</div>';fc.textContent='';return;
         }
-      };
-      xhr.onerror = function() {
-        setStatus('Connection error', 'error');
-      };
-      xhr.send(body);
+        d.files.sort(function(a,b){return b.name.localeCompare(a.name)});
+        fc.textContent=d.files.length+' images';
+        var h='';
+        d.files.forEach(function(f){
+          var kb=Math.round(f.size/1024);
+          h+='<div class="th" onclick="openMd(\''+f.name+'\','+f.size+')">';
+          h+='<img src="/sd/'+f.name+'" loading="lazy">';
+          h+='<div class="inf">'+f.name+' ('+kb+'KB)</div>';
+          h+='<button class="dl" onclick="event.stopPropagation();rmFromGal(\''+f.name+'\')">&times;</button>';
+          h+='</div>';
+        });
+        g.innerHTML=h;
+      }).catch(function(e){
+        g.innerHTML='<div class="em">Failed to load ('+e+')</div>';fc.textContent='';
+      });
     }
 
-    function setFrameSize(val) { sendSetting('framesize=' + val); }
-    function setGrayscale(on) { sendSetting('grayscale=' + (on ? 1 : 0)); }
-
-    function capturePhoto() {
-      setStatus('Capturing...');
-      // ストリームを一旦停止
-      streamImg.src = '';
-      streamImg.style.display = 'none';
-
-      // キャプチャ画像を取得
-      previewImg.src = '/capture?' + Date.now();
-      previewImg.style.display = 'block';
-      previewImg.onload = function() {
-        setStatus('Photo captured', 'ok');
-        saveBtn.style.display = 'block';
-      };
-      previewImg.onerror = function() {
-        setStatus('Capture failed', 'error');
-        startStream();
-      };
+    function openMd(name,size){
+      curFile=name;
+      document.getElementById('md-img').src='/sd/'+name;
+      document.getElementById('md-info').textContent=name+' ('+Math.round(size/1024)+' KB)';
+      document.getElementById('md').classList.add('active');
+    }
+    function closeMd(e){
+      if(!e||e.target===document.getElementById('md')||e.target.classList.contains('cl'))
+        document.getElementById('md').classList.remove('active');
+    }
+    function dlFile(){
+      var a=document.createElement('a');a.href='/sd/'+curFile;a.download=curFile;a.click();
+    }
+    function rmFile(){
+      if(!confirm('Delete '+curFile+'?'))return;
+      var x=new XMLHttpRequest();x.open('POST','/delete',true);
+      x.onload=function(){closeMd();loadGal()};x.send('file=/'+curFile);
+    }
+    function rmFromGal(name){
+      if(!confirm('Delete '+name+'?'))return;
+      var x=new XMLHttpRequest();x.open('POST','/delete',true);
+      x.onload=function(){loadGal()};x.send('file=/'+name);
     }
 
-    function saveCapture() {
-      var a = document.createElement('a');
-      a.href = '/capture?' + Date.now();
-      a.download = 'capture_' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
-      a.click();
-      setStatus('Photo saved', 'ok');
-    }
-
-    // 起動時に設定を取得してストリーム開始
-    fetch('/status')
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        document.getElementById('framesize').value = d.framesize;
-        document.getElementById('grayscale').checked = d.grayscale === 1;
-      })
-      .catch(function() {});
-
+    fetch('/status').then(function(r){return r.json()}).then(function(d){
+      document.getElementById('fs').value=d.framesize;
+      document.getElementById('gs').checked=d.grayscale===1;
+    }).catch(function(){});
     startStream();
   </script>
 </body>
@@ -441,19 +479,20 @@ static esp_err_t index_handler(httpd_req_t *req) {
   return httpd_resp_send(req, INDEX_HTML, strlen(INDEX_HTML));
 }
 
+// ────────────────────────────────────────
+// サーバー起動（2ポート構成）
+// ────────────────────────────────────────
 void startCameraServer() {
+  // ポート80: API/ページ用サーバー
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
-  config.max_uri_handlers = 8;
+  config.max_uri_handlers = 12;
+  config.uri_match_fn = httpd_uri_match_wildcard;
 
   httpd_uri_t index_uri = {.uri = "/",
                            .method = HTTP_GET,
                            .handler = index_handler,
                            .user_ctx = NULL};
-  httpd_uri_t stream_uri = {.uri = "/stream",
-                            .method = HTTP_GET,
-                            .handler = stream_handler,
-                            .user_ctx = NULL};
   httpd_uri_t capture_uri = {.uri = "/capture",
                              .method = HTTP_GET,
                              .handler = capture_handler,
@@ -466,15 +505,41 @@ void startCameraServer() {
                             .method = HTTP_GET,
                             .handler = status_handler,
                             .user_ctx = NULL};
+  httpd_uri_t files_uri = {.uri = "/files",
+                           .method = HTTP_GET,
+                           .handler = files_handler,
+                           .user_ctx = NULL};
+  httpd_uri_t sdfile_uri = {.uri = "/sd/*",
+                            .method = HTTP_GET,
+                            .handler = sdfile_handler,
+                            .user_ctx = NULL};
+  httpd_uri_t delete_uri = {.uri = "/delete",
+                            .method = HTTP_POST,
+                            .handler = delete_handler,
+                            .user_ctx = NULL};
 
-  Serial.printf("Starting web server on port: '%d'\n", config.server_port);
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
-    httpd_register_uri_handler(camera_httpd, &stream_uri);
     httpd_register_uri_handler(camera_httpd, &capture_uri);
     httpd_register_uri_handler(camera_httpd, &settings_uri);
     httpd_register_uri_handler(camera_httpd, &status_uri);
+    httpd_register_uri_handler(camera_httpd, &files_uri);
+    httpd_register_uri_handler(camera_httpd, &sdfile_uri);
+    httpd_register_uri_handler(camera_httpd, &delete_uri);
   }
 
-  Serial.println("Camera Server started successfully!");
+  // ポート81: ストリーム専用サーバー
+  httpd_config_t stream_config = HTTPD_DEFAULT_CONFIG();
+  stream_config.server_port = 81;
+  stream_config.ctrl_port = 32769;
+  stream_config.max_uri_handlers = 1;
+
+  httpd_uri_t stream_uri = {.uri = "/stream",
+                            .method = HTTP_GET,
+                            .handler = stream_handler,
+                            .user_ctx = NULL};
+
+  if (httpd_start(&stream_httpd, &stream_config) == ESP_OK) {
+    httpd_register_uri_handler(stream_httpd, &stream_uri);
+  }
 }
