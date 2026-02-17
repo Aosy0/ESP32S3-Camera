@@ -256,6 +256,7 @@ static const char INDEX_HTML[] = R"rawliteral(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ESP32-S3 Camera</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:'Segoe UI',Arial,sans-serif;background:#121212;color:#e0e0e0;min-height:100vh}
@@ -283,6 +284,7 @@ static const char INDEX_HTML[] = R"rawliteral(
     .btn{flex:1;padding:8px;border:1px solid #444;border-radius:6px;background:#2a2a2a;color:#e0e0e0;font-size:13px;cursor:pointer;transition:background .2s}
     .btn:hover{background:#383838}
     .btn:active{background:#444}
+    .btn:disabled{background:#1a1a1a;color:#666;cursor:not-allowed;opacity:0.6}
     .btn-g{background:#1b5e20;border-color:#2e7d32}
     .btn-g:hover{background:#2e7d32}
     .btn-r{background:#b71c1c;border-color:#c62828}
@@ -348,17 +350,18 @@ static const char INDEX_HTML[] = R"rawliteral(
   </div>
 
   <div class="pg" id="pg-gal">
+    <div class="prog" id="prog"></div>
     <div class="fc" id="fc"></div>
     <div class="bar">
       <button class="btn" onclick="loadGal()">Refresh</button>
       <button class="btn" id="selBtn" onclick="toggleSel()">Select</button>
       <button class="btn" id="saBtn" onclick="selAll()" style="display:none">All</button>
       <button class="btn" id="dlAllBtn" onclick="dlAll()" style="display:none">Download</button>
+      <button class="btn" id="zipBtn" onclick="dlZip()" style="display:none">ZIP Download</button>
       <button class="btn btn-r" id="rmAllBtn" onclick="rmAll()" style="display:none">Delete</button>
       <span class="cnt" id="selCnt"></span>
     </div>
     <div class="gal" id="gal"></div>
-    <div class="prog" id="prog"></div>
   </div>
 
   <div class="md" id="md" onclick="closeMd(event)">
@@ -428,6 +431,7 @@ static const char INDEX_HTML[] = R"rawliteral(
       var n=getSelNames().length;
       document.getElementById('saBtn').style.display=selMode?'':'none';
       document.getElementById('dlAllBtn').style.display=(selMode&&n>0)?'':'none';
+      document.getElementById('zipBtn').style.display=(selMode&&n>0)?'':'none';
       document.getElementById('rmAllBtn').style.display=(selMode&&n>0)?'':'none';
       document.getElementById('selCnt').textContent=selMode?(n>0?n+' selected':''):'';}
     function selAll(){
@@ -479,6 +483,45 @@ static const char INDEX_HTML[] = R"rawliteral(
         i++;setProg('Downloading '+i+'/'+names.length);setTimeout(next,500);
       }
       next();
+    }
+    function dlZip(){
+      var names=getSelNames();if(names.length===0)return;
+      if(typeof JSZip==='undefined'){alert('JSZip library not loaded');return;}
+      var zipBtn=document.getElementById('zipBtn');
+      zipBtn.disabled=true;
+      zipBtn.textContent='Processing...';
+      setProg('Creating ZIP: 0/'+names.length);
+      var zip=new JSZip();
+      var i=0;
+      function fetchNext(){
+        if(i>=names.length){
+          setProg('Generating ZIP file...');
+          zip.generateAsync({type:'blob'}).then(function(blob){
+            var a=document.createElement('a');
+            a.href=URL.createObjectURL(blob);
+            a.download='images_'+new Date().toISOString().replace(/[:.]/g,'-').slice(0,15)+'.zip';
+            a.click();
+            setProg('ZIP download complete ('+names.length+' files)');
+            URL.revokeObjectURL(a.href);
+            zipBtn.disabled=false;
+            zipBtn.textContent='ZIP Download';
+          }).catch(function(e){
+            setProg('ZIP generation failed: '+e);
+            zipBtn.disabled=false;
+            zipBtn.textContent='ZIP Download';
+          });
+          return;
+        }
+        fetch('/sd/'+names[i]).then(function(r){return r.blob()}).then(function(blob){
+          zip.file(names[i],blob);
+          i++;setProg('Creating ZIP: '+i+'/'+names.length);
+          fetchNext();
+        }).catch(function(e){
+          i++;setProg('Error on '+names[i-1]+', skipping...');
+          setTimeout(fetchNext,100);
+        });
+      }
+      fetchNext();
     }
     function rmAll(){
       var names=getSelNames();if(names.length===0)return;
