@@ -4,6 +4,7 @@
 #include "esp_http_server.h"
 #include "img_converters.h"
 #include <Arduino.h>
+#include <WiFi.h>
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 static const char *_STREAM_CONTENT_TYPE =
@@ -17,14 +18,22 @@ httpd_handle_t camera_httpd = NULL;
 httpd_handle_t stream_httpd = NULL;
 static bool grayscaleMode = false;
 
+// ストリーム統計情報
+static float stream_fps = 0;
+static size_t stream_frame_size = 0;
+static bool stream_active = false;
+
 // main.cppの関数/変数を参照
 extern bool saveImageToSD(camera_fb_t *fb);
 extern bool sdCardAvailable;
 extern int imageCount;
 
 // ────────────────────────────────────────
-// ストリームハンドラ（ポート81で動作）
+// ストリームハンドラ（ポート81で動作・最適化版）
 // ────────────────────────────────────────
+#define STREAM_TARGET_FPS 30
+#define STREAM_MIN_FRAME_MS (1000 / STREAM_TARGET_FPS)
+
 static esp_err_t stream_handler(httpd_req_t *req) {
   camera_fb_t *fb = NULL;
   esp_err_t res = ESP_OK;
@@ -32,11 +41,21 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   uint8_t *_jpg_buf = NULL;
   char part_buf[64];
 
+  // FPS計測用
+  unsigned long fps_start = millis();
+  int fps_count = 0;
+
+  stream_active = true;
+
   res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
-  if (res != ESP_OK)
+  if (res != ESP_OK) {
+    stream_active = false;
     return res;
+  }
 
   while (true) {
+    unsigned long frame_start = millis();
+
     fb = esp_camera_fb_get();
     if (!fb) {
       res = ESP_FAIL;
@@ -71,7 +90,25 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     }
     if (res != ESP_OK)
       break;
+
+    // 統計情報更新
+    stream_frame_size = _jpg_buf_len;
+    fps_count++;
+    unsigned long now = millis();
+    if (now - fps_start >= 1000) {
+      stream_fps = (float)fps_count * 1000.0f / (float)(now - fps_start);
+      fps_count = 0;
+      fps_start = now;
+    }
+
+    // フレームレート制御（WiFiバッファ輻輳防止）
+    unsigned long frame_time = millis() - frame_start;
+    if (frame_time < STREAM_MIN_FRAME_MS) {
+      delay(STREAM_MIN_FRAME_MS - frame_time);
+    }
   }
+  stream_active = false;
+  stream_fps = 0;
   return res;
 }
 
@@ -246,6 +283,19 @@ static esp_err_t delete_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+// ストリーム統計情報API
+static esp_err_t stats_handler(httpd_req_t *req) {
+  char buf[128];
+  int rssi = WiFi.RSSI();
+  snprintf(buf, sizeof(buf),
+           "{\"fps\":%.1f,\"frameKB\":%.1f,\"rssi\":%d,\"streaming\":%s}",
+           stream_fps, stream_frame_size / 1024.0f, rssi,
+           stream_active ? "true" : "false");
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, buf);
+  return ESP_OK;
+}
+
 // ────────────────────────────────────────
 // HTML（ストリームURLをポート81に向ける）
 // ────────────────────────────────────────
@@ -309,6 +359,12 @@ static const char INDEX_HTML[] = R"rawliteral(
     .bar{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
     .bar .cnt{font-size:12px;color:#90caf9;margin-left:4px}
     .prog{font-size:11px;color:#aaa;min-height:16px;margin-top:4px}
+    .stats{display:flex;gap:12px;background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:8px 12px;margin-top:8px;font-size:11px;color:#888;flex-wrap:wrap}
+    .stats .si{display:flex;align-items:center;gap:4px}
+    .stats .sv{color:#e0e0e0;font-weight:600}
+    .stats .sv.good{color:#4caf50}
+    .stats .sv.warn{color:#ff9800}
+    .stats .sv.bad{color:#f44336}
   </style>
 </head>
 <body>
@@ -333,6 +389,7 @@ static const char INDEX_HTML[] = R"rawliteral(
           <option value="8" selected>VGA (640x480)</option>
           <option value="9">SVGA (800x600)</option>
           <option value="10">XGA (1024x768)</option>
+          <option value="11">HD (1280x720)</option>
         </select>
       </div>
       <div class="cg">
@@ -346,6 +403,12 @@ static const char INDEX_HTML[] = R"rawliteral(
         <button class="btn" onclick="startStream()">Reload</button>
       </div>
       <div class="st" id="st">Ready</div>
+      <div class="stats" id="stats">
+        <div class="si">FPS: <span class="sv" id="s-fps">--</span></div>
+        <div class="si">Frame: <span class="sv" id="s-frame">--</span> KB</div>
+        <div class="si">WiFi: <span class="sv" id="s-rssi">--</span> dBm</div>
+        <div class="si">Signal: <span class="sv" id="s-bar">--</span></div>
+      </div>
     </div>
   </div>
 
@@ -398,6 +461,39 @@ static const char INDEX_HTML[] = R"rawliteral(
     function startStream(){
       si.src=STREAM_URL+'?'+Date.now();setSt('Streaming','ok');
     }
+
+    // ストリーム統計情報ポーリング
+    var statsTimer=null;
+    function startStats(){
+      if(statsTimer)return;
+      statsTimer=setInterval(function(){
+        fetch('/stats').then(function(r){return r.json()}).then(function(d){
+          var fpsEl=document.getElementById('s-fps');
+          var frameEl=document.getElementById('s-frame');
+          var rssiEl=document.getElementById('s-rssi');
+          var barEl=document.getElementById('s-bar');
+          fpsEl.textContent=d.fps.toFixed(1);
+          frameEl.textContent=d.frameKB.toFixed(1);
+          rssiEl.textContent=d.rssi;
+          // FPS色分け
+          fpsEl.className='sv'+(d.fps>=15?' good':d.fps>=8?' warn':' bad');
+          // フレームサイズ色分け
+          frameEl.className='sv';
+          // RSSI色分けと電波強度バー
+          var bars='';var cls='';
+          if(d.rssi>=-50){bars='\u2588\u2588\u2588\u2588\u2588';cls='good';}
+          else if(d.rssi>=-60){bars='\u2588\u2588\u2588\u2588\u2581';cls='good';}
+          else if(d.rssi>=-70){bars='\u2588\u2588\u2588\u2581\u2581';cls='warn';}
+          else if(d.rssi>=-80){bars='\u2588\u2588\u2581\u2581\u2581';cls='warn';}
+          else{bars='\u2588\u2581\u2581\u2581\u2581';cls='bad';}
+          rssiEl.className='sv '+cls;
+          barEl.textContent=bars;
+          barEl.className='sv '+cls;
+        }).catch(function(){});
+      },1000);
+    }
+    function stopStats(){if(statsTimer){clearInterval(statsTimer);statsTimer=null;}}
+    startStats();
 
     function sendSet(body){
       setSt('Applying...');stopStream();
@@ -605,6 +701,10 @@ void startCameraServer() {
                             .method = HTTP_POST,
                             .handler = delete_handler,
                             .user_ctx = NULL};
+  httpd_uri_t stats_uri = {.uri = "/stats",
+                           .method = HTTP_GET,
+                           .handler = stats_handler,
+                           .user_ctx = NULL};
 
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
@@ -614,13 +714,15 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &files_uri);
     httpd_register_uri_handler(camera_httpd, &sdfile_uri);
     httpd_register_uri_handler(camera_httpd, &delete_uri);
+    httpd_register_uri_handler(camera_httpd, &stats_uri);
   }
 
-  // ポート81: ストリーム専用サーバー
+  // ポート81: ストリーム専用サーバー（スタックサイズ拡大）
   httpd_config_t stream_config = HTTPD_DEFAULT_CONFIG();
   stream_config.server_port = 81;
   stream_config.ctrl_port = 32769;
   stream_config.max_uri_handlers = 1;
+  stream_config.stack_size = 8192;
 
   httpd_uri_t stream_uri = {.uri = "/stream",
                             .method = HTTP_GET,
