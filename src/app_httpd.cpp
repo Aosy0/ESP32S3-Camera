@@ -308,81 +308,93 @@ static const char INDEX_HTML[] = R"rawliteral(
   <title>ESP32-S3 Camera</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
+    :root{--bg:#121212;--card:#1e1e1e;--text:#e0e0e0;--accent:#90caf9;--accent-hover:#42a5f5;--border:#333;--danger:#ef5350}
     *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:'Segoe UI',Arial,sans-serif;background:#121212;color:#e0e0e0;min-height:100vh}
-    .hd{background:#1e1e1e;padding:12px 20px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center}
-    .hd h1{font-size:16px;font-weight:600;color:#90caf9}
-    .tabs{display:flex;gap:4px}
-    .tab{padding:6px 14px;border:1px solid #444;border-radius:4px;background:#2a2a2a;color:#aaa;font-size:13px;cursor:pointer}
-    .tab.active{background:#333;color:#90caf9;border-color:#90caf9}
-    .pg{display:none;padding:16px;max-width:720px;margin:0 auto}
-    .pg.active{display:block}
-    .sc{text-align:center}
-    #stream{max-width:100%;border:2px solid #333;border-radius:8px;background:#000}
-    .ct{display:flex;flex-direction:column;gap:10px;margin-top:12px}
-    .cg{background:#1e1e1e;border-radius:8px;padding:14px;border:1px solid #333}
-    .cg label{display:block;font-size:12px;color:#90caf9;margin-bottom:6px;font-weight:600}
-    select{width:100%;padding:8px;background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:6px;font-size:14px;outline:none}
-    .tr{display:flex;justify-content:space-between;align-items:center}
-    .tg{position:relative;width:44px;height:24px}
-    .tg input{opacity:0;width:0;height:0}
-    .sl{position:absolute;cursor:pointer;inset:0;background:#444;border-radius:24px;transition:.3s}
-    .sl:before{content:"";position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s}
-    .tg input:checked+.sl{background:#90caf9}
-    .tg input:checked+.sl:before{transform:translateX(20px)}
-    .br{display:flex;gap:6px}
-    .btn{flex:1;padding:8px;border:1px solid #444;border-radius:6px;background:#2a2a2a;color:#e0e0e0;font-size:13px;cursor:pointer;transition:background .2s}
-    .btn:hover{background:#383838}
-    .btn:active{background:#444}
-    .btn:disabled{background:#1a1a1a;color:#666;cursor:not-allowed;opacity:0.6}
-    .btn-g{background:#1b5e20;border-color:#2e7d32}
-    .btn-g:hover{background:#2e7d32}
-    .btn-r{background:#b71c1c;border-color:#c62828}
-    .btn-r:hover{background:#c62828}
-    .st{font-size:11px;color:#888;text-align:center;min-height:16px;margin-top:4px}
-    .st.ok{color:#4caf50}.st.er{color:#f44336}
-    .gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
-    .th{position:relative;aspect-ratio:4/3;overflow:hidden;border-radius:6px;border:1px solid #333;cursor:pointer;background:#000}
-    .th img{width:100%;height:100%;object-fit:cover}
-    .th .inf{position:absolute;bottom:0;left:0;right:0;padding:4px 6px;background:rgba(0,0,0,.7);font-size:10px;color:#ccc}
-    .th .chk{position:absolute;top:4px;left:4px;width:20px;height:20px;accent-color:#90caf9;display:none}
-    .sel-mode .th .chk{display:block}
-    .th.selected{border:2px solid #90caf9}
-    .md{display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:100;align-items:center;justify-content:center;flex-direction:column}
-    .md.active{display:flex}
-    .md img{max-width:95%;max-height:80vh;border-radius:8px}
-    .md .cl{position:absolute;top:16px;right:20px;font-size:28px;color:#fff;cursor:pointer;background:none;border:none}
-    .md .mi{color:#aaa;font-size:13px;margin-top:8px}
-    .md .mb{display:flex;gap:8px;margin-top:10px}
-    .em{text-align:center;color:#666;padding:40px;font-size:14px}
-    .fc{font-size:12px;color:#888;margin-bottom:8px}
-    .bar{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
-    .bar .cnt{font-size:12px;color:#90caf9;margin-left:4px}
-    .prog{font-size:11px;color:#aaa;min-height:16px;margin-top:4px}
-    .stats{display:flex;gap:12px;background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:8px 12px;margin-top:8px;font-size:11px;color:#888;flex-wrap:wrap}
-    .stats .si{display:flex;align-items:center;gap:4px}
-    .stats .sv{color:#e0e0e0;font-weight:600}
-    .stats .sv.good{color:#4caf50}
-    .stats .sv.warn{color:#ff9800}
-    .stats .sv.bad{color:#f44336}
+    body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden}
+    
+    /* Layout */
+    .main-grid{display:grid;grid-template-rows:1fr auto;height:100%;max-width:800px;margin:0 auto;width:100%}
+    .stream-area{position:relative;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden;width:100%;height:100%}
+    #stream{max-width:100%;max-height:100%;object-fit:contain}
+    
+    .controls{background:var(--card);padding:20px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:16px;z-index:10}
+    
+    /* Components */
+    .header{display:flex;justify-content:space-between;align-items:center}
+    h1{font-size:18px;font-weight:600;color:var(--accent);margin:0}
+    .status-badge{font-size:12px;padding:4px 8px;border-radius:12px;background:#333;color:#888}
+    .status-badge.ok{background:#1b5e20;color:#a5d6a7}
+    .status-badge.er{background:#b71c1c;color:#ef9a9a}
+    
+    .action-bar{display:grid;grid-template-columns:1fr 1fr auto;gap:12px}
+    .btn{border:none;border-radius:8px;padding:12px;font-size:14px;font-weight:600;cursor:pointer;transition:.2s;display:flex;align-items:center;justify-content:center;gap:6px;background:#333;color:var(--text)}
+    .btn:hover{background:#444}
+    .btn:active{transform:scale(0.98)}
+    .btn-primary{background:var(--accent);color:#0d47a1}
+    .btn-primary:hover{background:var(--accent-hover)}
+    .btn-icon{padding:12px;width:48px}
+    
+    .settings-row{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px}
+    select{background:#2a2a2a;color:var(--text);border:1px solid var(--border);padding:8px 12px;border-radius:6px;font-size:14px;outline:none}
+    
+    .stats-row{display:flex;gap:16px;font-size:12px;color:#888;align-items:center}
+    .stat-item{display:flex;gap:4px}
+    .stat-val{color:var(--text);font-weight:600}
+    
+    /* Toggle Switch */
+    .toggle{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px}
+    .toggle input{display:none}
+    .slider{width:36px;height:20px;background:#444;border-radius:20px;position:relative;transition:.3s}
+    .slider:before{content:"";position:absolute;height:16px;width:16px;left:2px;bottom:2px;background:#fff;border-radius:50%;transition:.3s}
+    input:checked+.slider{background:var(--accent)}
+    input:checked+.slider:before{transform:translateX(16px)}
+    
+    /* Gallery Modal */
+    .modal{position:fixed;inset:0;background:rgba(0,0,0,0.95);z-index:100;display:none;flex-direction:column}
+    .modal.active{display:flex}
+    .modal-header{padding:16px;background:var(--card);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)}
+    .modal-body{flex:1;overflow-y:auto;padding:16px}
+    .gal-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+    .gal-item{aspect-ratio:4/3;background:#000;border-radius:4px;overflow:hidden;position:relative;cursor:pointer;border:1px solid #333}
+    .gal-item img{width:100%;height:100%;object-fit:cover;transition:.2s}
+    .gal-item:hover{border-color:var(--accent)}
+    .gal-item.selected{border:2px solid var(--accent)}
+    .gal-chk{position:absolute;top:4px;left:4px;width:18px;height:18px;accent-color:var(--accent);display:none}
+    .gal-grid.select-mode .gal-chk{display:block}
+    
+    /* Media Query for PC */
+    @media (min-width: 768px) {
+      .main-grid{grid-template-rows:1fr;grid-template-columns:1fr 320px;max-width:1200px}
+      .controls{border-top:none;border-left:1px solid var(--border);height:100%}
+      .stream-area{border-right:1px solid var(--border)}
+    }
   </style>
 </head>
 <body>
-  <div class="hd">
-    <h1>ESP32-S3 Camera</h1>
-    <div class="tabs">
-      <div class="tab active" onclick="showPage('live')">Live</div>
-      <div class="tab" onclick="showPage('gal')">Gallery</div>
+  <div class="main-grid">
+    <div class="stream-area">
+      <img id="stream" src="" alt="Live Stream">
     </div>
-  </div>
+    
+    <div class="controls">
+      <div class="header">
+        <h1>ESP32-S3 Camera</h1>
+        <div id="st" class="status-badge">Ready</div>
+      </div>
 
-  <div class="pg active" id="pg-live">
-    <div class="sc">
-      <img id="stream" src="" alt="Stream">
-    </div>
-    <div class="ct">
-      <div class="cg">
-        <label>Resolution</label>
+      <div class="action-bar">
+        <button class="btn btn-primary" onclick="capture()">
+          <span>Capture</span>
+        </button>
+        <button class="btn" onclick="startStream()">
+          <span>Reload</span>
+        </button>
+        <button class="btn btn-icon" onclick="openGal()" title="Gallery">
+          <svg style="width:24px;height:24px" viewBox="0 0 24 24"><path fill="currentColor" d="M22,16V4A2,2 0 0,0 20,2H8A2,2 0 0,0 6,4V16A2,2 0 0,0 8,18H20A2,2 0 0,0 22,16M11,12L13.03,14.71L16,11L20,16H8M2,6V20A2,2 0 0,0 4,22H18V20H4V6"></path></svg>
+        </button>
+      </div>
+
+      <div class="settings-row">
         <select id="fs" onchange="setFS(this.value)">
           <option value="5">QVGA (320x240)</option>
           <option value="6">CIF (400x296)</option>
@@ -391,268 +403,246 @@ static const char INDEX_HTML[] = R"rawliteral(
           <option value="10">XGA (1024x768)</option>
           <option value="11">HD (1280x720)</option>
         </select>
+        
+        <label class="toggle">
+          <input type="checkbox" id="gs" onchange="setGS(this.checked)">
+          <span class="slider"></span>
+          <span>Grayscale</span>
+        </label>
       </div>
-      <div class="cg">
-        <div class="tr">
-          <span style="font-size:14px">Grayscale</span>
-          <label class="tg"><input type="checkbox" id="gs" onchange="setGS(this.checked)"><span class="sl"></span></label>
-        </div>
-      </div>
-      <div class="br">
-        <button class="btn" onclick="capture()">Capture</button>
-        <button class="btn" onclick="startStream()">Reload</button>
-      </div>
-      <div class="st" id="st">Ready</div>
-      <div class="stats" id="stats">
-        <div class="si">FPS: <span class="sv" id="s-fps">--</span></div>
-        <div class="si">Frame: <span class="sv" id="s-frame">--</span> KB</div>
-        <div class="si">WiFi: <span class="sv" id="s-rssi">--</span> dBm</div>
-        <div class="si">Signal: <span class="sv" id="s-bar">--</span></div>
+
+      <div style="flex:1"></div> <!-- Spacer -->
+
+      <div class="stats-row">
+        <div class="stat-item">FPS: <span class="stat-val" id="s-fps">--</span></div>
+        <div class="stat-item">KB: <span class="stat-val" id="s-frame">--</span></div>
+        <div class="stat-item">WiFi: <span class="stat-val" id="s-rssi">--</span></div>
       </div>
     </div>
   </div>
 
-  <div class="pg" id="pg-gal">
-    <div class="prog" id="prog"></div>
-    <div class="fc" id="fc"></div>
-    <div class="bar">
-      <button class="btn" onclick="loadGal()">Refresh</button>
+  <!-- Gallery Modal -->
+  <div class="modal" id="galModal">
+    <div class="modal-header">
+      <div style="display:flex;gap:8px;align-items:center">
+        <h2>Gallery</h2>
+        <span id="galCount" style="font-size:12px;color:#888"></span>
+      </div>
+      <div>
+        <button class="btn" onclick="closeGal()">Close</button>
+      </div>
+    </div>
+    
+    <div style="padding:8px 16px;background:var(--card);border-bottom:1px solid var(--border);display:flex;gap:8px;overflow-x:auto">
       <button class="btn" id="selBtn" onclick="toggleSel()">Select</button>
-      <button class="btn" id="saBtn" onclick="selAll()" style="display:none">All</button>
-      <button class="btn" id="dlAllBtn" onclick="dlAll()" style="display:none">Download</button>
-      <button class="btn" id="zipBtn" onclick="dlZip()" style="display:none">ZIP Download</button>
-      <button class="btn btn-r" id="rmAllBtn" onclick="rmAll()" style="display:none">Delete</button>
-      <span class="cnt" id="selCnt"></span>
+      <button class="btn" id="dlBtn" onclick="dlSel()" style="display:none">Download</button>
+      <button class="btn" id="zipBtn" onclick="dlZip()" style="display:none">ZIP</button>
+      <button class="btn" id="delBtn" onclick="delSel()" style="display:none;color:var(--danger)">Delete</button>
     </div>
-    <div class="gal" id="gal"></div>
-  </div>
 
-  <div class="md" id="md" onclick="closeMd(event)">
-    <button class="cl" onclick="closeMd()">&times;</button>
-    <img id="md-img" src="">
-    <div class="mi" id="md-info"></div>
-    <div class="mb">
-      <button class="btn" onclick="dlFile()">Download</button>
-      <button class="btn btn-r" onclick="rmFile()">Delete</button>
+    <div class="modal-body">
+      <div id="loading" style="text-align:center;padding:20px;color:#888">Loading...</div>
+      <div class="gal-grid" id="galGrid"></div>
+    </div>
+  </div>
+  
+  <!-- Single Image Preview Modal -->
+  <div class="modal" id="imgModal" style="background:rgba(0,0,0,0.98)" onclick="closeImg()">
+    <button class="btn btn-icon" style="position:absolute;top:16px;right:16px;background:none;color:#fff;font-size:24px" onclick="closeImg()">&times;</button>
+    <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:20px">
+      <img id="prevImg" src="" style="max-width:100%;max-height:90vh;border-radius:4px">
+    </div>
+    <div style="padding:20px;display:flex;justify-content:center;gap:16px;z-index:101" onclick="event.stopPropagation()">
+      <button class="btn" onclick="dlCur()">Download</button>
+      <button class="btn" style="color:var(--danger)" onclick="delCur()">Delete</button>
     </div>
   </div>
 
   <script>
-    var STREAM_URL='http://'+location.hostname+':81/stream';
-    var si=document.getElementById('stream');
-    var stEl=document.getElementById('st');
-    var curFile='';
-    var selMode=false;
-    var galFiles=[];
+    const EL = (id) => document.getElementById(id);
+    const STREAM_URL = 'http://'+location.hostname+':81/stream';
+    let selMode = false;
+    let galFiles = [];
+    let curFile = '';
 
-    function setSt(m,t){stEl.textContent=m;stEl.className='st'+(t?' '+t:'')}
-    function setProg(m){document.getElementById('prog').textContent=m}
-
-    function showPage(p){
-      document.querySelectorAll('.pg').forEach(function(e){e.classList.remove('active')});
-      document.querySelectorAll('.tab').forEach(function(e){e.classList.remove('active')});
-      document.getElementById('pg-'+p).classList.add('active');
-      var tabs=document.querySelectorAll('.tab');
-      if(p==='live'){tabs[0].classList.add('active');startStream();}
-      else{tabs[1].classList.add('active');stopStream();loadGal();}
+    // -- Stream & Status --
+    function startStream() {
+      EL('stream').src = STREAM_URL + '?' + Date.now();
+      showStatus('Streaming', 'ok');
+    }
+    
+    function showStatus(msg, type='') {
+      const el = EL('st');
+      el.textContent = msg;
+      el.className = 'status-badge ' + type;
     }
 
-    function stopStream(){si.src=''}
-    function startStream(){
-      si.src=STREAM_URL+'?'+Date.now();setSt('Streaming','ok');
+    function capture() {
+      showStatus('Capturing...');
+      fetch('/capture?' + Date.now())
+        .then(r => r.ok ? showStatus('Saved', 'ok') : showStatus('Error', 'er'))
+        .catch(() => showStatus('Error', 'er'));
     }
 
-    // ストリーム統計情報ポーリング
-    var statsTimer=null;
-    function startStats(){
-      if(statsTimer)return;
-      statsTimer=setInterval(function(){
-        fetch('/stats').then(function(r){return r.json()}).then(function(d){
-          var fpsEl=document.getElementById('s-fps');
-          var frameEl=document.getElementById('s-frame');
-          var rssiEl=document.getElementById('s-rssi');
-          var barEl=document.getElementById('s-bar');
-          fpsEl.textContent=d.fps.toFixed(1);
-          frameEl.textContent=d.frameKB.toFixed(1);
-          rssiEl.textContent=d.rssi;
-          // FPS色分け
-          fpsEl.className='sv'+(d.fps>=15?' good':d.fps>=8?' warn':' bad');
-          // フレームサイズ色分け
-          frameEl.className='sv';
-          // RSSI色分けと電波強度バー
-          var bars='';var cls='';
-          if(d.rssi>=-50){bars='\u2588\u2588\u2588\u2588\u2588';cls='good';}
-          else if(d.rssi>=-60){bars='\u2588\u2588\u2588\u2588\u2581';cls='good';}
-          else if(d.rssi>=-70){bars='\u2588\u2588\u2588\u2581\u2581';cls='warn';}
-          else if(d.rssi>=-80){bars='\u2588\u2588\u2581\u2581\u2581';cls='warn';}
-          else{bars='\u2588\u2581\u2581\u2581\u2581';cls='bad';}
-          rssiEl.className='sv '+cls;
-          barEl.textContent=bars;
-          barEl.className='sv '+cls;
-        }).catch(function(){});
-      },1000);
+    function sendSet(q) {
+      showStatus('Applying...');
+      fetch('/settings', {method:'POST', body:q})
+        .then(r => {
+          if(r.ok) { showStatus('OK', 'ok'); setTimeout(startStream, 300); }
+          else showStatus('Error', 'er');
+        })
+        .catch(() => showStatus('Error', 'er'));
     }
-    function stopStats(){if(statsTimer){clearInterval(statsTimer);statsTimer=null;}}
-    startStats();
-
-    function sendSet(body){
-      setSt('Applying...');stopStream();
-      var x=new XMLHttpRequest();x.open('POST','/settings',true);
-      x.onload=function(){if(x.status===200){setSt('Applied','ok');setTimeout(startStream,300);}else setSt('Error','er')};
-      x.onerror=function(){setSt('Error','er')};x.send(body);
-    }
-    function setFS(v){sendSet('framesize='+v)}
-    function setGS(on){sendSet('grayscale='+(on?1:0))}
-
-    function capture(){
-      setSt('Saving...');
-      fetch('/capture?'+Date.now()).then(function(r){
-        if(r.ok)setSt('Saved to SD','ok');
-        else setSt('Failed','er');
-      }).catch(function(){setSt('Failed','er')});
-    }
+    function setFS(v) { sendSet('framesize='+v); }
+    function setGS(c) { sendSet('grayscale='+(c?1:0)); }
 
     // -- Gallery --
-    function toggleSel(){
-      selMode=!selMode;
-      var g=document.getElementById('gal');
-      if(selMode){g.classList.add('sel-mode');document.getElementById('selBtn').textContent='Cancel';}
-      else{g.classList.remove('sel-mode');document.getElementById('selBtn').textContent='Select';
-        g.querySelectorAll('.chk').forEach(function(c){c.checked=false});
-        g.querySelectorAll('.th').forEach(function(t){t.classList.remove('selected')});
-      }
-      updateSelUI();
+    function openGal() {
+      EL('galModal').classList.add('active');
+      loadGal();
     }
-    function updateSelUI(){
-      var n=getSelNames().length;
-      document.getElementById('saBtn').style.display=selMode?'':'none';
-      document.getElementById('dlAllBtn').style.display=(selMode&&n>0)?'':'none';
-      document.getElementById('zipBtn').style.display=(selMode&&n>0)?'':'none';
-      document.getElementById('rmAllBtn').style.display=(selMode&&n>0)?'':'none';
-      document.getElementById('selCnt').textContent=selMode?(n>0?n+' selected':''):'';}
-    function selAll(){
-      var g=document.getElementById('gal');var all=g.querySelectorAll('.chk');
-      var allChecked=true;all.forEach(function(c){if(!c.checked)allChecked=false});
-      all.forEach(function(c){c.checked=!allChecked;c.parentElement.classList.toggle('selected',!allChecked)});
-      updateSelUI();
-    }
-    function getSelNames(){
-      var names=[];document.querySelectorAll('.gal .chk:checked').forEach(function(c){names.push(c.dataset.name)});return names;
-    }
-    function onChk(el){el.parentElement.classList.toggle('selected',el.checked);updateSelUI()}
-    function thClick(name,size,el){
-      if(selMode){var c=el.querySelector('.chk');c.checked=!c.checked;onChk(c);}
-      else openMd(name,size);
+    function closeGal() {
+      EL('galModal').classList.remove('active');
+      selMode = false; updateSelUI();
     }
 
-    function loadGal(){
-      var g=document.getElementById('gal');var fc=document.getElementById('fc');
-      g.innerHTML='<div class="em">Loading...</div>';setProg('');
-      fetch('/files').then(function(r){return r.json()}).then(function(d){
-        galFiles=d.files||[];
-        if(galFiles.length===0){g.innerHTML='<div class="em">No images on SD card</div>';fc.textContent='';return;}
-        galFiles.sort(function(a,b){return b.name.localeCompare(a.name)});
-        fc.textContent=galFiles.length+' images';
-        var h='';
-        galFiles.forEach(function(f){
-          var kb=Math.round(f.size/1024);
-          h+='<div class="th" onclick="thClick(\''+f.name+'\','+f.size+',this)">';
-          h+='<input type="checkbox" class="chk" data-name="'+f.name+'" onclick="event.stopPropagation();onChk(this)">';
-          h+='<img src="/sd/'+f.name+'" loading="lazy">';
-          h+='<div class="inf">'+f.name+' ('+kb+'KB)</div>';
-          h+='</div>';
-        });
-        g.innerHTML=h;
-        if(selMode)g.classList.add('sel-mode');
-        updateSelUI();
-      }).catch(function(e){
-        g.innerHTML='<div class="em">Failed to load</div>';fc.textContent='';
+    function loadGal() {
+      EL('galGrid').innerHTML = '';
+      EL('loading').style.display = 'block';
+      fetch('/files').then(r => r.json()).then(d => {
+        EL('loading').style.display = 'none';
+        galFiles = d.files || [];
+        EL('galCount').textContent = galFiles.length + ' items';
+        galFiles.sort((a,b) => b.name.localeCompare(a.name)); // Descending
+        
+        const html = galFiles.map(f => `
+          <div class="gal-item" onclick="onItemClick('${f.name}', this)">
+            <input type="checkbox" class="gal-chk" data-name="${f.name}" onclick="event.stopPropagation();updateSelUI()">
+            <img src="/sd/${f.name}" loading="lazy">
+          </div>
+        `).join('');
+        EL('galGrid').innerHTML = html || '<div style="text-align:center;color:#666;grid-column:1/-1">No images</div>';
       });
     }
 
-    function dlAll(){
-      var names=getSelNames();if(names.length===0)return;
-      var i=0;setProg('Downloading 0/'+names.length);
-      function next(){
-        if(i>=names.length){setProg('Download complete ('+names.length+')');return;}
-        var a=document.createElement('a');a.href='/sd/'+names[i];a.download=names[i];a.click();
-        i++;setProg('Downloading '+i+'/'+names.length);setTimeout(next,500);
+    function toggleSel() {
+      selMode = !selMode;
+      EL('galGrid').classList.toggle('select-mode', selMode);
+      EL('selBtn').textContent = selMode ? 'Cancel' : 'Select';
+      if(!selMode) document.querySelectorAll('.gal-chk').forEach(c => c.checked = false);
+      updateSelUI();
+    }
+
+    function updateSelUI() {
+      const n = document.querySelectorAll('.gal-chk:checked').length;
+      EL('dlBtn').style.display = (selMode && n>0) ? 'block':'none';
+      EL('zipBtn').style.display = (selMode && n>0) ? 'block':'none';
+      EL('delBtn').style.display = (selMode && n>0) ? 'block':'none';
+    }
+
+    function onItemClick(name, el) {
+      if(selMode) {
+        const chk = el.querySelector('.gal-chk');
+        chk.checked = !chk.checked;
+        el.classList.toggle('selected', chk.checked);
+        updateSelUI();
+      } else {
+        curFile = name;
+        EL('prevImg').src = '/sd/' + name;
+        EL('imgModal').classList.add('active');
+      }
+    }
+    
+    function closeImg() { EL('imgModal').classList.remove('active'); }
+
+    // -- Actions (Download / Delete) --
+    function getSel() {
+      return Array.from(document.querySelectorAll('.gal-chk:checked')).map(c => c.dataset.name);
+    }
+
+    function dlSel() {
+      const files = getSel();
+      let i = 0;
+      function next() {
+        if(i >= files.length) return;
+        const a = document.createElement('a');
+        a.href = '/sd/' + files[i];
+        a.download = files[i];
+        a.click();
+        i++; setTimeout(next, 500);
       }
       next();
     }
-    function dlZip(){
-      var names=getSelNames();if(names.length===0)return;
-      if(typeof JSZip==='undefined'){alert('JSZip library not loaded');return;}
-      var zipBtn=document.getElementById('zipBtn');
-      zipBtn.disabled=true;
-      zipBtn.textContent='Processing...';
-      setProg('Creating ZIP: 0/'+names.length);
-      var zip=new JSZip();
-      var i=0;
-      function fetchNext(){
-        if(i>=names.length){
-          setProg('Generating ZIP file...');
-          zip.generateAsync({type:'blob'}).then(function(blob){
-            var a=document.createElement('a');
-            a.href=URL.createObjectURL(blob);
-            a.download='images_'+new Date().toISOString().replace(/[:.]/g,'-').slice(0,15)+'.zip';
+
+    function dlZip() {
+      const files = getSel();
+      if(!files.length) return;
+      if(typeof JSZip === 'undefined') { alert('JSZip not loaded'); return; }
+      const btn = EL('zipBtn');
+      btn.innerText = 'Zipping...'; btn.disabled = true;
+      
+      const zip = new JSZip();
+      let count = 0;
+      
+      const addFile = (idx) => {
+        if(idx >= files.length) {
+          zip.generateAsync({type:'blob'}).then(blob => {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'capture_' + new Date().getTime() + '.zip';
             a.click();
-            setProg('ZIP download complete ('+names.length+' files)');
-            URL.revokeObjectURL(a.href);
-            zipBtn.disabled=false;
-            zipBtn.textContent='ZIP Download';
-          }).catch(function(e){
-            setProg('ZIP generation failed: '+e);
-            zipBtn.disabled=false;
-            zipBtn.textContent='ZIP Download';
+            btn.innerText = 'ZIP'; btn.disabled = false;
           });
           return;
         }
-        fetch('/sd/'+names[i]).then(function(r){return r.blob()}).then(function(blob){
-          zip.file(names[i],blob);
-          i++;setProg('Creating ZIP: '+i+'/'+names.length);
-          fetchNext();
-        }).catch(function(e){
-          i++;setProg('Error on '+names[i-1]+', skipping...');
-          setTimeout(fetchNext,100);
+        fetch('/sd/'+files[idx]).then(r => r.blob()).then(blob => {
+          zip.file(files[idx], blob);
+          addFile(idx+1);
         });
-      }
-      fetchNext();
+      };
+      addFile(0);
     }
-    function rmAll(){
-      var names=getSelNames();if(names.length===0)return;
-      if(!confirm('WARNING: '+names.length+' images will be permanently deleted.\n\nAre you sure?'))return;
-      var i=0,ok=0;setProg('Deleting 0/'+names.length);
-      function next(){
-        if(i>=names.length){setProg('Deleted '+ok+'/'+names.length);loadGal();return;}
-        var x=new XMLHttpRequest();x.open('POST','/delete',true);var n=names[i];
-        x.onload=function(){ok++;i++;setProg('Deleting '+i+'/'+names.length);setTimeout(next,100)};
-        x.onerror=function(){i++;setTimeout(next,100)};x.send('file=/'+n);
+
+    function delSel() {
+      const files = getSel();
+      if(!confirm(`Delete ${files.length} items?`)) return;
+      let i = 0;
+      function next() {
+        if(i >= files.length) { loadGal(); toggleSel(); return; }
+        fetch('/delete', {method:'POST', body:'file=/'+files[i]})
+        .then(() => { i++; next(); });
       }
       next();
     }
-
-    function openMd(name,size){
-      curFile=name;document.getElementById('md-img').src='/sd/'+name;
-      document.getElementById('md-info').textContent=name+' ('+Math.round(size/1024)+' KB)';
-      document.getElementById('md').classList.add('active');
+    
+    function dlCur() {
+        const a = document.createElement('a');
+        a.href = '/sd/' + curFile;
+        a.download = curFile;
+        a.click();
     }
-    function closeMd(e){
-      if(!e||e.target===document.getElementById('md')||e.target.classList.contains('cl'))
-        document.getElementById('md').classList.remove('active');
-    }
-    function dlFile(){var a=document.createElement('a');a.href='/sd/'+curFile;a.download=curFile;a.click()}
-    function rmFile(){
-      if(!confirm('"'+curFile+'" to delete. Are you sure?'))return;
-      var x=new XMLHttpRequest();x.open('POST','/delete',true);
-      x.onload=function(){closeMd();loadGal()};x.send('file=/'+curFile);
+    function delCur() {
+        if(!confirm('Delete this image?')) return;
+        fetch('/delete', {method:'POST', body:'file=/'+curFile})
+        .then(() => { closeImg(); loadGal(); });
     }
 
-    fetch('/status').then(function(r){return r.json()}).then(function(d){
-      document.getElementById('fs').value=d.framesize;
-      document.getElementById('gs').checked=d.grayscale===1;
-    }).catch(function(){});
+    // -- Init --
+    fetch('/status').then(r=>r.json()).then(d=>{
+      EL('fs').value = d.framesize;
+      EL('gs').checked = (d.grayscale === 1);
+    });
+    
     startStream();
+    
+    // Stats loop
+    setInterval(() => {
+      fetch('/stats').then(r=>r.json()).then(d=>{
+        EL('s-fps').textContent = d.fps.toFixed(1);
+        EL('s-frame').textContent = (d.frameKB).toFixed(1);
+        EL('s-rssi').textContent = d.rssi + 'dBm';
+      }).catch(()=>{});
+    }, 2000); // Slow down stats to 2s
   </script>
 </body>
 </html>
