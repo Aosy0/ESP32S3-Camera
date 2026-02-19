@@ -80,6 +80,9 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     if (res == ESP_OK)
       res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY,
                                   strlen(_STREAM_BOUNDARY));
+    
+
+    
     if (fb) {
       esp_camera_fb_return(fb);
       fb = NULL;
@@ -90,8 +93,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     }
     if (res != ESP_OK)
       break;
-
-    // 統計情報更新
+    
+    // 統計情報更新（実際に送信したフレームサイズ）
     stream_frame_size = _jpg_buf_len;
     fps_count++;
     unsigned long now = millis();
@@ -389,7 +392,7 @@ static const char INDEX_HTML[] = R"rawliteral(
           <option value="8" selected>VGA (640x480)</option>
           <option value="9">SVGA (800x600)</option>
           <option value="10">XGA (1024x768)</option>
-          <option value="11">HD (1280x720)</option>
+
         </select>
       </div>
       <div class="cg">
