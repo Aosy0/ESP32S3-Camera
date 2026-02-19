@@ -692,6 +692,7 @@ void startCameraServer() {
   config.server_port = 80;
   config.max_uri_handlers = 12;
   config.uri_match_fn = httpd_uri_match_wildcard;
+  config.stack_size = 16384;  // アップロード処理用にスタックサイズ拡大
 
   httpd_uri_t index_uri = {.uri = "/",
                            .method = HTTP_GET,

@@ -88,46 +88,78 @@ bool saveImageToSD(camera_fb_t *fb, char *outFilename, size_t maxLen) {
 // 画像をクラウドにアップロード
 bool uploadImage(camera_fb_t *fb, const char *filename) {
   if (strlen(UPLOAD_URL) == 0 || strlen(API_KEY) == 0) {
+    Serial.println("Upload: Disabled (no config)");
     return false;
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();  // 証明書検証をスキップ（本番環境では注意）
+  Serial.printf("Upload: Size=%d bytes\n", fb->len);
 
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(15000);
+
+  Serial.println("Upload: Connecting...");
   if (!client.connect("asia-northeast1-cloud-storage-gateway-cps.cloudfunctions.net", 443)) {
     Serial.println("Upload: Connection failed");
     return false;
   }
+  Serial.println("Upload: Connected");
 
-  String boundary = "----ESP32CameraBoundary" + String(millis());
-  String filePart = "--" + boundary + "\r\n";
-  filePart += "Content-Disposition: form-data; name=\"file\"; filename=\"";
-  filePart += String(filename).substring(1);  // 先頭の/を削除
-  filePart += "\"\r\nContent-Type: image/jpeg\r\n\r\n";
+  String boundary = "----ESP32Cam" + String(millis());
+  
+  String fileHeader = "--" + boundary + "\r\n";
+  fileHeader += "Content-Disposition: form-data; name=\"file\"; filename=\"";
+  fileHeader += String(filename).substring(1);
+  fileHeader += "\"\r\nContent-Type: image/jpeg\r\n\r\n";
+  String fileFooter = "\r\n--" + boundary + "--\r\n";
+  size_t contentLength = fileHeader.length() + fb->len + fileFooter.length();
 
-  String endPart = "\r\n--" + boundary + "--\r\n";
+  // ヘッダー送信
+  client.print("POST /upload-entry HTTP/1.1\r\n");
+  client.print("Host: asia-northeast1-cloud-storage-gateway-cps.cloudfunctions.net\r\n");
+  client.print("X-API-Key: " + String(API_KEY) + "\r\n");
+  client.print("Content-Type: multipart/form-data; boundary=" + boundary + "\r\n");
+  client.print("Content-Length: " + String(contentLength) + "\r\n");
+  client.print("Connection: close\r\n");
+  client.print("\r\n");
 
-  size_t contentLength = filePart.length() + fb->len + endPart.length();
+  // ボディ送信
+  client.print(fileHeader);
+  
+  // 画像データを分割送信（8KBずつ）
+  size_t totalSent = 0;
+  const size_t chunkSize = 8192;
+  while (totalSent < fb->len) {
+    size_t toSend = (fb->len - totalSent > chunkSize) ? chunkSize : (fb->len - totalSent);
+    size_t sent = client.write(fb->buf + totalSent, toSend);
+    if (sent == 0) {
+      Serial.println("Upload: Write failed");
+      client.stop();
+      return false;
+    }
+    totalSent += sent;
+    delay(1);  // バッファ消化待ち
+  }
+  
+  client.print(fileFooter);
 
-  String request = "POST /upload-entry HTTP/1.1\r\n";
-  request += "Host: asia-northeast1-cloud-storage-gateway-cps.cloudfunctions.net\r\n";
-  request += "X-API-Key: " + String(API_KEY) + "\r\n";
-  request += "Content-Type: multipart/form-data; boundary=" + boundary + "\r\n";
-  request += "Content-Length: " + String(contentLength) + "\r\n";
-  request += "Connection: close\r\n";
-  request += "\r\n";
+  Serial.printf("Upload: Sent %d bytes\n", totalSent);
 
-  client.print(request);
-  client.print(filePart);
-  client.write(fb->buf, fb->len);
-  client.print(endPart);
+  // レスポンス待機
+  Serial.println("Upload: Waiting response...");
+  unsigned long startTime = millis();
+  while (!client.available() && millis() - startTime < 10000) {
+    delay(10);
+  }
 
-  delay(100);
-
+  // レスポンス読み取り
   String response = "";
   while (client.available()) {
-    response += client.readString();
+    response += (char)client.read();
   }
+
+  Serial.println("Upload: Response start");
+  Serial.println(response.substring(0, 200));  // 最初の200文字だけ表示
 
   bool success = response.indexOf("200") >= 0 || response.indexOf("201") >= 0;
   if (success) {
