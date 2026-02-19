@@ -269,7 +269,27 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("OK");
     Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+    
+    // NTP時刻同期
+    Serial.print("NTP: ");
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    
+    // NTP同期待機（最大10秒）
+    struct tm timeinfo;
+    int ntpTimeout = 20;
+    while (!getLocalTime(&timeinfo) && ntpTimeout > 0) {
+      delay(500);
+      ntpTimeout--;
+    }
+    
+    if (ntpTimeout > 0) {
+      Serial.printf("%04d-%02d-%02d %02d:%02d:%02d\n",
+                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                    timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    } else {
+      Serial.println("Failed (using default time)");
+    }
+    
     startCameraServer();
   } else {
     Serial.println("Failed");
