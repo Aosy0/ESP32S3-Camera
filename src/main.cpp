@@ -7,6 +7,7 @@
 #include "time.h"
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 
 // XIAO ESP32S3 拡張基板 SDカードピン設定（SD_MMC 1ビットモード）
 #define SD_MMC_CLK 7
@@ -80,15 +81,83 @@ bool saveImageToSD(camera_fb_t *fb) {
   return false;
 }
 
+// 画像をクラウドにアップロード
+bool uploadImage(camera_fb_t *fb, const char *filename) {
+  if (strlen(UPLOAD_URL) == 0 || strlen(API_KEY) == 0) {
+    return false;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();  // 証明書検証をスキップ（本番環境では注意）
+
+  if (!client.connect("asia-northeast1-cloud-storage-gateway-cps.cloudfunctions.net", 443)) {
+    Serial.println("Upload: Connection failed");
+    return false;
+  }
+
+  String boundary = "----ESP32CameraBoundary" + String(millis());
+  String filePart = "--" + boundary + "\r\n";
+  filePart += "Content-Disposition: form-data; name=\"file\"; filename=\"";
+  filePart += String(filename).substring(1);  // 先頭の/を削除
+  filePart += "\"\r\nContent-Type: image/jpeg\r\n\r\n";
+
+  String endPart = "\r\n--" + boundary + "--\r\n";
+
+  size_t contentLength = filePart.length() + fb->len + endPart.length();
+
+  String request = "POST /upload-entry HTTP/1.1\r\n";
+  request += "Host: asia-northeast1-cloud-storage-gateway-cps.cloudfunctions.net\r\n";
+  request += "X-API-Key: " + String(API_KEY) + "\r\n";
+  request += "Content-Type: multipart/form-data; boundary=" + boundary + "\r\n";
+  request += "Content-Length: " + String(contentLength) + "\r\n";
+  request += "Connection: close\r\n";
+  request += "\r\n";
+
+  client.print(request);
+  client.print(filePart);
+  client.write(fb->buf, fb->len);
+  client.print(endPart);
+
+  delay(100);
+
+  String response = "";
+  while (client.available()) {
+    response += client.readString();
+  }
+
+  bool success = response.indexOf("200") >= 0 || response.indexOf("201") >= 0;
+  if (success) {
+    Serial.println("Upload: OK");
+  } else {
+    Serial.println("Upload: Failed");
+  }
+
+  client.stop();
+  return success;
+}
+
 // 写真撮影とSDカード保存
 void captureAndSave() {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb)
     return;
 
+  struct tm timeinfo;
+  char filename[64];
+
+  if (!getLocalTime(&timeinfo)) {
+    snprintf(filename, sizeof(filename), "/image_%04d.jpg", imageCount);
+  } else {
+    snprintf(filename, sizeof(filename), "/%04d%02d%02d_%02d%02d%02d.jpg",
+             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+  }
+
   if (saveImageToSD(fb)) {
     imageCount++;
   }
+
+  uploadImage(fb, filename);
 
   esp_camera_fb_return(fb);
 }

@@ -6,4 +6,9 @@
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
+// アップロード設定（オプション）
+// 画像をクラウドに自動アップロードする場合に設定
+const char* UPLOAD_URL = "";  // 空欄ならアップロード無効
+const char* API_KEY = "";     // X-API-Keyヘッダーの値
+
 #endif // CONFIG_H
