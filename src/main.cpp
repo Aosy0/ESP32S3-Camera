@@ -51,8 +51,8 @@ bool initSDCard() {
   return true;
 }
 
-// 画像をSDカードに保存
-bool saveImageToSD(camera_fb_t *fb) {
+// 画像をSDカードに保存（ファイル名を生成して返す）
+bool saveImageToSD(camera_fb_t *fb, char *outFilename, size_t maxLen) {
   if (!sdCardAvailable)
     return false;
 
@@ -76,6 +76,10 @@ bool saveImageToSD(camera_fb_t *fb) {
 
   if (written == fb->len) {
     Serial.printf("Saved: %s\n", filename);
+    if (outFilename && maxLen > 0) {
+      strncpy(outFilename, filename, maxLen - 1);
+      outFilename[maxLen - 1] = '\0';
+    }
     return true;
   }
   return false;
@@ -136,28 +140,17 @@ bool uploadImage(camera_fb_t *fb, const char *filename) {
   return success;
 }
 
-// 写真撮影とSDカード保存
+// 写真撮影とSDカード保存（自動アップロード付き）
 void captureAndSave() {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb)
     return;
 
-  struct tm timeinfo;
-  char filename[64];
-
-  if (!getLocalTime(&timeinfo)) {
-    snprintf(filename, sizeof(filename), "/image_%04d.jpg", imageCount);
-  } else {
-    snprintf(filename, sizeof(filename), "/%04d%02d%02d_%02d%02d%02d.jpg",
-             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-  }
-
-  if (saveImageToSD(fb)) {
+  char filename[64] = "";
+  if (saveImageToSD(fb, filename, sizeof(filename))) {
     imageCount++;
+    uploadImage(fb, filename);
   }
-
-  uploadImage(fb, filename);
 
   esp_camera_fb_return(fb);
 }

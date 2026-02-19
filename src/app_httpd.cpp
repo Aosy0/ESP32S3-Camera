@@ -24,7 +24,8 @@ static size_t stream_frame_size = 0;
 static bool stream_active = false;
 
 // main.cppの関数/変数を参照
-extern bool saveImageToSD(camera_fb_t *fb);
+extern bool saveImageToSD(camera_fb_t *fb, char *outFilename, size_t maxLen);
+extern bool uploadImage(camera_fb_t *fb, const char *filename);
 extern bool sdCardAvailable;
 extern int imageCount;
 
@@ -145,8 +146,14 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   }
   // SDカードに保存
   if (sdCardAvailable) {
-    if (saveImageToSD(fb))
+    char filename[64] = "";
+    if (saveImageToSD(fb, filename, sizeof(filename))) {
       imageCount++;
+      // アップロードパラメータがある場合はクラウドにアップロード
+      if (req->uri && strstr(req->uri, "upload=1")) {
+        uploadImage(fb, filename);
+      }
+    }
   }
   esp_camera_fb_return(fb);
   return res;
@@ -401,6 +408,12 @@ static const char INDEX_HTML[] = R"rawliteral(
           <label class="tg"><input type="checkbox" id="gs" onchange="setGS(this.checked)"><span class="sl"></span></label>
         </div>
       </div>
+      <div class="cg">
+        <div class="tr">
+          <span style="font-size:14px">Upload to cloud</span>
+          <label class="tg"><input type="checkbox" id="upl"><span class="sl"></span></label>
+        </div>
+      </div>
       <div class="br">
         <button class="btn" onclick="capture()">Capture</button>
         <button class="btn" onclick="startStream()">Reload</button>
@@ -508,9 +521,13 @@ static const char INDEX_HTML[] = R"rawliteral(
     function setGS(on){sendSet('grayscale='+(on?1:0))}
 
     function capture(){
+      var upl=document.getElementById('upl').checked;
       setSt('Saving...');
-      fetch('/capture?'+Date.now()).then(function(r){
-        if(r.ok)setSt('Saved to SD','ok');
+      fetch('/capture?upload='+(upl?1:0)+'&'+Date.now()).then(function(r){
+        if(r.ok){
+          if(upl)setSt('Saved & Uploaded','ok');
+          else setSt('Saved to SD','ok');
+        }
         else setSt('Failed','er');
       }).catch(function(){setSt('Failed','er')});
     }
