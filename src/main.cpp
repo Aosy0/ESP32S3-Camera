@@ -192,6 +192,10 @@ void setup() {
   delay(1000);
   Serial.println("\nESP32-S3 Camera");
 
+  // CPU周波数を160MHzに下げて発熱を抑制
+  setCpuFrequencyMhz(160);
+  Serial.printf("CPU: %d MHz\n", getCpuFrequencyMhz());
+
   // カメラ設定
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
